@@ -1,0 +1,106 @@
+﻿{
+  "configurations": [
+    {
+      "name": "x64-Debug",
+      "generator": "Visual Studio 16 2019 Win64",
+      "configurationType": "Debug",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=Debug"
+    },
+    {
+      "name": "x64-Release",
+      "generator": "Visual Studio 16 2019 Win64",
+      "configurationType": "Release",
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=Release",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
+    },
+    {
+      "name": "x64-Debug-2022",
+      "generator": "Visual Studio 17 2022 Win64",
+      "configurationType": "Debug",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=Debug"
+    },
+    {
+      "name": "x64-Release-2022",
+      "generator": "Visual Studio 17 2022 Win64",
+      "configurationType": "Release",
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=Release",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
+    },
+    {
+      "name": "x64-RelWithDebInfo",
+      "generator": "Visual Studio 16 2019 Win64",
+      "configurationType": "RelWithDebInfo",
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
+    },
+    {
+      "name": "x64-RelWithDebInfo-2022",
+      "generator": "Visual Studio 17 2022 Win64",
+      "configurationType": "RelWithDebInfo",
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
+    },
+    {
+      "name": "x64-Debug-2026",
+      "generator": "Visual Studio 18 2026 Win64",
+      "cmakeExecutable": "C:\\Program Files\\CMake\\bin\\cmake.exe",
+      "configurationType": "Debug",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=Debug"
+    },
+    {
+      "name": "x64-Release-2026",
+      "generator": "Visual Studio 18 2026 Win64",
+      "cmakeExecutable": "C:\\Program Files\\CMake\\bin\\cmake.exe",
+      "configurationType": "Release",
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=Release",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
+    },
+    {
+      "name": "x64-RelWithDebInfo-2026",
+      "generator": "Visual Studio 18 2026 Win64",
+      "cmakeExecutable": "C:\\Program Files\\CMake\\bin\\cmake.exe",
+      "configurationType": "RelWithDebInfo",
+      "buildRoot": "${projectDir}//out//build//${name}",
+      "installRoot": "${projectDir}//out//install//${name}",
+      "cmakeCommandArgs": "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "msvc_x64_x64" ]
+    }
+  ]
+}

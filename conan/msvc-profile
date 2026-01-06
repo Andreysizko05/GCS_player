@@ -1,0 +1,25 @@
+
+include(profile)
+
+[settings]
+os=Windows
+arch=x86_64
+compiler=msvc
+compiler.version=195
+compiler.runtime=dynamic
+compiler.cppstd=17
+# Just default configuration for tools building. Cmake will replace it
+build_type=Release
+
+
+[options]
+*:shared=True
+qt/*:shared=True
+qt/*:qt3d=False
+qt/*:with_postgresql=False
+qt/*:qtserialport=True
+qt/*:qtquickcontrols2=True
+qt/*:qtgamepad=False
+qt/*:with_zstd=False
+qt/*:with_icu=False
+
