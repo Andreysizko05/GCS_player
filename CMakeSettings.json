@@ -1,0 +1,32 @@
+﻿{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "x64-Debug-2026",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "configurationType": "Debug",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "x64-Release-2026",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "configurationType": "Release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "x64-RelWithDebInfo-2026",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "configurationType": "RelWithDebInfo",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    }
+  ]
+}

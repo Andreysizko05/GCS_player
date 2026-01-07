@@ -31,6 +31,7 @@ _ReSharper*/
 [Tt]est[Rr]esult*
 .vs/
 out/
+vcpkg_installed/
 
 
 CMakeUserPresets.json
