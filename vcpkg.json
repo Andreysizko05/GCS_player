@@ -1,11 +1,7 @@
 {
-  "dependencies": [
-    "qt"
-  ],
-  "overrides": [
-    {
-      "name": "qt",
-      "version": "6.8.3#1"
-    }
-  ]
+    "dependencies": [
+        "qtbase",
+        "qtserialport",
+        "qttools"
+    ]
 }

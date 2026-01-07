@@ -27,6 +27,22 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
     )
+
+qt_import_plugins(PID_GUI
+    INCLUDE Qt6::QWindowsIntegrationPlugin
+)
+
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+	find_program(TOOL_WINDEPLOYQT NAMES windeployqt.debug.bat)
+else()
+	find_program(TOOL_WINDEPLOYQT NAMES windeployqt)
+endif()
+
+add_custom_command(TARGET PID_GUI POST_BUILD
+    COMMAND ${TOOL_WINDEPLOYQT}
+            $<TARGET_FILE:PID_GUI>
+    COMMENT "Running windeployqt..."
+)
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET PID_GUI APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
 #                 ${CMAKE_CURRENT_SOURCE_DIR}/android)
