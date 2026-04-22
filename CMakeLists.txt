@@ -1,93 +1,108 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 
-project(PID_GUI VERSION 0.1 LANGUAGES CXX)
+if(POLICY CMP0207)
+    cmake_policy(SET CMP0207 NEW)
+endif()
 
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
+project(PID_GUI VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets LinguistTools)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets LinguistTools)
+find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
 
-set(TS_FILES PID_GUI_uk_UA.ts)
+qt_standard_project_setup(I18N_TRANSLATED_LANGUAGES uk_UA)
 
-set(PROJECT_SOURCES
-        main.cpp
-        MainWindow.cpp
-        MainWindow.h
-        MainWindow.ui
-        ${TS_FILES}
+qt_add_executable(PID_GUI
+    MANUAL_FINALIZATION
+    main.cpp
+    MainWindow.cpp
+    MainWindow.h
+    MainWindow.ui
 )
 
-if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
-    qt_add_executable(PID_GUI
-        MANUAL_FINALIZATION
-        ${PROJECT_SOURCES}
-    )
-
-qt_import_plugins(PID_GUI
-    INCLUDE Qt6::QWindowsIntegrationPlugin
+qt_add_translations(PID_GUI
+    TS_FILES PID_GUI_uk_UA.ts
+    RESOURCE_PREFIX /i18n
 )
 
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-	find_program(TOOL_WINDEPLOYQT NAMES windeployqt.debug.bat)
-else()
-	find_program(TOOL_WINDEPLOYQT NAMES windeployqt)
-endif()
+target_link_libraries(PID_GUI PRIVATE Qt6::Widgets)
 
-add_custom_command(TARGET PID_GUI POST_BUILD
-    COMMAND ${TOOL_WINDEPLOYQT}
-            $<TARGET_FILE:PID_GUI>
-    COMMENT "Running windeployqt..."
-)
-# Define target properties for Android with Qt 6 as:
-#    set_property(TARGET PID_GUI APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
-#                 ${CMAKE_CURRENT_SOURCE_DIR}/android)
-# For more information, see https://doc.qt.io/qt-6/qt-add-executable.html#target-creation
-
-    qt_create_translation(QM_FILES ${CMAKE_SOURCE_DIR} ${TS_FILES})
-else()
-    if(ANDROID)
-        add_library(PID_GUI SHARED
-            ${PROJECT_SOURCES}
-        )
-# Define properties for Android with Qt 5 after find_package() calls as:
-#    set(ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android")
-    else()
-        add_executable(PID_GUI
-            ${PROJECT_SOURCES}
-        )
-    endif()
-
-    qt5_create_translation(QM_FILES ${CMAKE_SOURCE_DIR} ${TS_FILES})
-endif()
-
-target_link_libraries(PID_GUI PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
-
-# Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
-# If you are developing for iOS or macOS you should consider setting an
-# explicit, fixed bundle identifier manually though.
-if(${QT_VERSION} VERSION_LESS 6.1.0)
-  set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.PID_GUI)
-endif()
 set_target_properties(PID_GUI PROPERTIES
-    ${BUNDLE_ID_OPTION}
-    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
-    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_GUI_IDENTIFIER ua.kpi.pid-gui
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
     WIN32_EXECUTABLE TRUE
 )
 
 include(GNUInstallDirs)
+
 install(TARGETS PID_GUI
+    RUNTIME_DEPENDENCY_SET PID_GUI_runtime_deps
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-if(QT_VERSION_MAJOR EQUAL 6)
-    qt_finalize_executable(PID_GUI)
+if(WIN32)
+    set(QT_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/qt.conf")
+    set(QT_PLUGINS_DIR_RELEASE "${Qt6_DIR}/../../Qt6/plugins")
+    set(QT_PLUGINS_DIR_DEBUG "${Qt6_DIR}/../../debug/Qt6/plugins")
+
+    add_custom_command(TARGET PID_GUI POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${QT_CONF_FILE}"
+            "$<TARGET_FILE_DIR:PID_GUI>/qt.conf"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:PID_GUI>/plugins/platforms"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:PID_GUI>/plugins/styles"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<IF:$<CONFIG:Debug>,${QT_PLUGINS_DIR_DEBUG}/platforms/qwindowsd.dll,${QT_PLUGINS_DIR_RELEASE}/platforms/qwindows.dll>"
+            "$<IF:$<CONFIG:Debug>,$<TARGET_FILE_DIR:PID_GUI>/plugins/platforms/qwindowsd.dll,$<TARGET_FILE_DIR:PID_GUI>/plugins/platforms/qwindows.dll>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<IF:$<CONFIG:Debug>,${QT_PLUGINS_DIR_DEBUG}/styles/qmodernwindowsstyled.dll,${QT_PLUGINS_DIR_RELEASE}/styles/qmodernwindowsstyle.dll>"
+            "$<IF:$<CONFIG:Debug>,$<TARGET_FILE_DIR:PID_GUI>/plugins/styles/qmodernwindowsstyled.dll,$<TARGET_FILE_DIR:PID_GUI>/plugins/styles/qmodernwindowsstyle.dll>"
+        COMMENT "Copying Qt runtime plugins for local Windows execution"
+    )
+
+    install(FILES "${QT_CONF_FILE}"
+        DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(FILES
+            "${QT_PLUGINS_DIR_DEBUG}/platforms/qwindowsd.dll"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/platforms"
+        CONFIGURATIONS Debug
+    )
+    install(FILES
+            "${QT_PLUGINS_DIR_RELEASE}/platforms/qwindows.dll"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/platforms"
+        CONFIGURATIONS Release RelWithDebInfo MinSizeRel
+    )
+    install(FILES
+            "${QT_PLUGINS_DIR_DEBUG}/styles/qmodernwindowsstyled.dll"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/styles"
+        CONFIGURATIONS Debug
+    )
+    install(FILES
+            "${QT_PLUGINS_DIR_RELEASE}/styles/qmodernwindowsstyle.dll"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/styles"
+        CONFIGURATIONS Release RelWithDebInfo MinSizeRel
+    )
+    install(RUNTIME_DEPENDENCY_SET PID_GUI_runtime_deps
+        DESTINATION ${CMAKE_INSTALL_BINDIR}
+        PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-" "[Hh][Vv][Ss][Ii]FileTrust\\.dll"
+        POST_EXCLUDE_REGEXES ".*/system32/.*\\.dll"
+    )
+else()
+    qt_generate_deploy_app_script(
+        TARGET PID_GUI
+        OUTPUT_SCRIPT deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${deploy_script})
 endif()
+
+qt_finalize_executable(PID_GUI)

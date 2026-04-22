@@ -1,7 +1,35 @@
 {
-    "dependencies": [
-        "qtbase",
-        "qtserialport",
-        "qttools"
-    ]
+  "name": "pid-gui",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [
+        "widgets"
+      ]
+    },
+    {
+      "name": "qttools",
+      "default-features": false,
+      "features": [
+        "linguist"
+      ]
+    }
+  ],
+  "features": {
+    "serialport": {
+      "description": "Install Qt Serial Port for device communication.",
+      "dependencies": [
+        "qtserialport"
+      ]
+    },
+    "gstreamer": {
+      "description": "Install GStreamer through vcpkg for future media integration.",
+      "dependencies": [
+        "pkgconf",
+        "gstreamer"
+      ]
+    }
+  }
 }
