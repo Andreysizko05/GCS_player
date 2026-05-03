@@ -17,7 +17,17 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
     Ui::MainWindow *ui;
+
+    int mVideoAreaLeft = 0;
+    int mVideoAreaTop = 0;
+    int mVideoAreaRight = 0;
+    int mVideoAreaBottom = 0;
+    float mFrameWidthFactor = 0.995f;
+    float mFrameHeightFactor = 0.945f;
 };
 #endif // MAINWINDOW_H
