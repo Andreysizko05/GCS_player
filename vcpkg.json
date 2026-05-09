@@ -25,10 +25,24 @@
       ]
     },
     "gstreamer": {
-      "description": "Install GStreamer through vcpkg for future media integration.",
+      "description": "Install GStreamer for UDP/RTP H.264 video reception and rendering.",
       "dependencies": [
         "pkgconf",
-        "gstreamer"
+        {
+          "name": "qtmultimedia",
+          "default-features": false,
+          "features": [
+            "widgets"
+          ]
+        },
+        {
+          "name": "gstreamer",
+          "features": [
+            "plugins-good",
+            "plugins-bad",
+            "libav"
+          ]
+        }
       ]
     }
   }

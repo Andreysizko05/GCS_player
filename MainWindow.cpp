@@ -1,15 +1,50 @@
 #include "MainWindow.h"
 #include "./ui_MainWindow.h"
 
+#ifdef GCS_ENABLE_GSTREAMER
+#include "GstVideoReceiver.h"
+
+#include <QtMultimedia/QVideoSink>
+#include <QtMultimediaWidgets/QVideoWidget>
+#endif
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    ui->videoFrameLabel->setStyleSheet(QStringLiteral("background-color: black; color: white;"));
+    ui->videoFrameLabel->setScaledContents(false);
+    ui->videoFrameLabel->setAlignment(Qt::AlignCenter);
+
+#ifdef GCS_ENABLE_GSTREAMER
+    mVideoWidget = new QVideoWidget(ui->centralwidget);
+    mVideoWidget->setObjectName(QStringLiteral("videoFrameSinkWidget"));
+    mVideoWidget->setAspectRatioMode(Qt::KeepAspectRatio);
+    mVideoWidget->setStyleSheet(QStringLiteral("background-color: black;"));
+    mVideoWidget->setGeometry(ui->videoFrameLabel->geometry());
+    mVideoWidget->show();
+    ui->videoFrameLabel->hide();
+
+    mVideoReceiver = new GstVideoReceiver(this);
+    connect(mVideoReceiver, &GstVideoReceiver::frameReady, this, &MainWindow::onVideoFrameReady);
+    connect(mVideoReceiver, &GstVideoReceiver::receiverMessage, this, &MainWindow::onVideoReceiverMessage);
+    connect(mVideoReceiver, &GstVideoReceiver::receiverError, this, &MainWindow::onVideoReceiverError);
+    mVideoReceiver->start();
+#else
+    ui->videoFrameLabel->setText(QStringLiteral("GStreamer support is disabled.\nUse a *-gstreamer preset to enable video."));
+#endif
 }
 
 MainWindow::~MainWindow()
 {
+#ifdef GCS_ENABLE_GSTREAMER
+    if (mVideoReceiver != nullptr)
+    {
+        mVideoReceiver->stop();
+        mVideoReceiver->wait();
+    }
+#endif
 
     delete ui;
 }
@@ -23,8 +58,8 @@ void MainWindow::resizeEvent(QResizeEvent* event)
         static_cast<int>(availableSize.width() * mFrameWidthFactor),
         static_cast<int>(availableSize.height() * mFrameHeightFactor)
     );
-
-    ui->videoFrameLabel->setGeometry(0, 0, frameSize.width(), frameSize.height());
+    const int frameOriginX = (availableSize.width() - frameSize.width()) / 2;
+    const int frameOriginY = (availableSize.height() - frameSize.height()) / 2;
 
     if (frameSize.width() <= 0 || frameSize.height() <= 0)
     {
@@ -52,5 +87,38 @@ void MainWindow::resizeEvent(QResizeEvent* event)
         targetRect = QRect(xOffset, 0, targetWidth, frameSize.height());
     }
 
+    targetRect.translate(frameOriginX, frameOriginY);
+    videoSurfaceWidget()->setGeometry(targetRect);
 	targetRect.getCoords(&mVideoAreaLeft, &mVideoAreaTop, &mVideoAreaRight, &mVideoAreaBottom);
 }
+
+QWidget* MainWindow::videoSurfaceWidget() const
+{
+#ifdef GCS_ENABLE_GSTREAMER
+    if (mVideoWidget != nullptr) {
+        return mVideoWidget;
+    }
+#endif
+    return ui->videoFrameLabel;
+}
+
+#ifdef GCS_ENABLE_GSTREAMER
+void MainWindow::onVideoFrameReady(const QVideoFrame& frame)
+{
+    if (mVideoWidget == nullptr || mVideoWidget->videoSink() == nullptr || !frame.isValid()) {
+        return;
+    }
+
+    mVideoWidget->videoSink()->setVideoFrame(frame);
+}
+
+void MainWindow::onVideoReceiverMessage(const QString& message)
+{
+    ui->statusbar->showMessage(message, 3000);
+}
+
+void MainWindow::onVideoReceiverError(const QString& message)
+{
+    ui->statusbar->showMessage(message, 5000);
+}
+#endif
