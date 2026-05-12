@@ -12,7 +12,10 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        "GCS_FETCH_QT_WITH_AQT": "ON",
+        "GCS_QT_VERSION": "6.10.0",
+        "GCS_QT_INSTALL_ROOT": "${sourceDir}/.qt-sdk",
+        "GCS_GSTREAMER_MODE": "AUTO"
       }
     },
     {
@@ -28,9 +31,6 @@
       "architecture": {
         "strategy": "set",
         "value": "x64"
-      },
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
       }
     },
     {
@@ -42,10 +42,7 @@
         "lhs": "${hostSystemName}",
         "rhs": "Linux"
       },
-      "generator": "Ninja",
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-linux"
-      }
+      "generator": "Ninja"
     },
     {
       "name": "macos-base",
@@ -56,10 +53,7 @@
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
       },
-      "generator": "Ninja",
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "arm64-osx"
-      }
+      "generator": "Ninja"
     },
     {
       "name": "windows-debug",
@@ -82,7 +76,7 @@
       "inherits": "windows-debug",
       "binaryDir": "${sourceDir}/build/windows-debug-gstreamer",
       "cacheVariables": {
-        "VCPKG_MANIFEST_FEATURES": "gstreamer"
+        "GCS_GSTREAMER_MODE": "ON"
       }
     },
     {
@@ -108,7 +102,7 @@
       "inherits": "linux-debug",
       "binaryDir": "${sourceDir}/build/linux-debug-gstreamer",
       "cacheVariables": {
-        "VCPKG_MANIFEST_FEATURES": "gstreamer"
+        "GCS_GSTREAMER_MODE": "ON"
       }
     },
     {
@@ -134,7 +128,7 @@
       "inherits": "macos-debug",
       "binaryDir": "${sourceDir}/build/macos-debug-gstreamer",
       "cacheVariables": {
-        "VCPKG_MANIFEST_FEATURES": "gstreamer"
+        "GCS_GSTREAMER_MODE": "ON"
       }
     }
   ],

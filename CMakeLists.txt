@@ -11,12 +11,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH ON)
+set(GCS_GSTREAMER_MODE "AUTO" CACHE STRING "Controls video receiver support: AUTO, ON, or OFF.")
+set_property(CACHE GCS_GSTREAMER_MODE PROPERTY STRINGS AUTO ON OFF)
+
+include(cmake/BootstrapQt.cmake)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
 find_package(PkgConfig QUIET)
 
 set(GCS_ENABLE_GSTREAMER OFF)
-if(PkgConfig_FOUND)
+string(TOUPPER "${GCS_GSTREAMER_MODE}" GCS_GSTREAMER_MODE)
+
+if(GCS_GSTREAMER_MODE STREQUAL "OFF")
+    message(STATUS "GStreamer receiver support is disabled by configuration")
+elseif(PkgConfig_FOUND)
     pkg_check_modules(GSTREAMER IMPORTED_TARGET QUIET
         gstreamer-1.0
         gstreamer-app-1.0
@@ -25,9 +33,18 @@ if(PkgConfig_FOUND)
     if(TARGET PkgConfig::GSTREAMER)
         set(GCS_ENABLE_GSTREAMER ON)
         message(STATUS "GStreamer receiver support is enabled")
+    elseif(GCS_GSTREAMER_MODE STREQUAL "ON")
+        message(FATAL_ERROR
+            "GStreamer receiver support was requested, but the required development files "
+            "were not found via pkg-config."
+        )
     else()
         message(STATUS "GStreamer development files were not found, building without video receiver")
     endif()
+elseif(GCS_GSTREAMER_MODE STREQUAL "ON")
+    message(FATAL_ERROR "GStreamer receiver support was requested, but pkg-config is unavailable.")
+else()
+    message(STATUS "pkg-config is unavailable, building without video receiver")
 endif()
 
 if(GCS_ENABLE_GSTREAMER)
@@ -82,7 +99,6 @@ set_target_properties(GCS_player PROPERTIES
 include(GNUInstallDirs)
 
 install(TARGETS GCS_player
-    RUNTIME_DEPENDENCY_SET GCS_player_runtime_deps
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -156,62 +172,32 @@ if(GCS_ENABLE_GSTREAMER AND DEFINED VCPKG_TARGET_TRIPLET)
 endif()
 
 if(WIN32)
-    set(QT_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/qt.conf")
-    set(QT_PLUGINS_DIR_RELEASE "${Qt6_DIR}/../../Qt6/plugins")
-    set(QT_PLUGINS_DIR_DEBUG "${Qt6_DIR}/../../debug/Qt6/plugins")
-
-    add_custom_command(TARGET GCS_player POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${QT_CONF_FILE}"
-            "$<TARGET_FILE_DIR:GCS_player>/qt.conf"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:GCS_player>/plugins/platforms"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:GCS_player>/plugins/styles"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${QT_PLUGINS_DIR_DEBUG}/platforms/qwindowsd.dll,${QT_PLUGINS_DIR_RELEASE}/platforms/qwindows.dll>"
-            "$<IF:$<CONFIG:Debug>,$<TARGET_FILE_DIR:GCS_player>/plugins/platforms/qwindowsd.dll,$<TARGET_FILE_DIR:GCS_player>/plugins/platforms/qwindows.dll>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${QT_PLUGINS_DIR_DEBUG}/styles/qmodernwindowsstyled.dll,${QT_PLUGINS_DIR_RELEASE}/styles/qmodernwindowsstyle.dll>"
-            "$<IF:$<CONFIG:Debug>,$<TARGET_FILE_DIR:GCS_player>/plugins/styles/qmodernwindowsstyled.dll,$<TARGET_FILE_DIR:GCS_player>/plugins/styles/qmodernwindowsstyle.dll>"
-        COMMENT "Copying Qt runtime plugins for local Windows execution"
+    get_filename_component(GCS_QT_INSTALL_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+    find_program(GCS_WINDEPLOYQT_EXECUTABLE
+        NAMES windeployqt
+        HINTS "${GCS_QT_INSTALL_PREFIX}/bin"
     )
-
-    install(FILES "${QT_CONF_FILE}"
-        DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-    install(FILES
-            "${QT_PLUGINS_DIR_DEBUG}/platforms/qwindowsd.dll"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/platforms"
-        CONFIGURATIONS Debug
-    )
-    install(FILES
-            "${QT_PLUGINS_DIR_RELEASE}/platforms/qwindows.dll"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/platforms"
-        CONFIGURATIONS Release RelWithDebInfo MinSizeRel
-    )
-    install(FILES
-            "${QT_PLUGINS_DIR_DEBUG}/styles/qmodernwindowsstyled.dll"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/styles"
-        CONFIGURATIONS Debug
-    )
-    install(FILES
-            "${QT_PLUGINS_DIR_RELEASE}/styles/qmodernwindowsstyle.dll"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}/plugins/styles"
-        CONFIGURATIONS Release RelWithDebInfo MinSizeRel
-    )
-    install(RUNTIME_DEPENDENCY_SET GCS_player_runtime_deps
-        DESTINATION ${CMAKE_INSTALL_BINDIR}
-        PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-" "[Hh][Vv][Ss][Ii]FileTrust\\.dll"
-        POST_EXCLUDE_REGEXES ".*/system32/.*\\.dll"
-    )
-else()
-    qt_generate_deploy_app_script(
-        TARGET GCS_player
-        OUTPUT_SCRIPT deploy_script
-        NO_UNSUPPORTED_PLATFORM_ERROR
-    )
-    install(SCRIPT ${deploy_script})
+    if(GCS_WINDEPLOYQT_EXECUTABLE)
+        add_custom_command(TARGET GCS_player POST_BUILD
+            COMMAND "${GCS_WINDEPLOYQT_EXECUTABLE}"
+                --force
+                --no-translations
+                "$<TARGET_FILE:GCS_player>"
+            COMMENT "Deploying the Qt runtime for local Windows execution"
+        )
+    else()
+        message(WARNING
+            "windeployqt was not found under ${GCS_QT_INSTALL_PREFIX}/bin. "
+            "The built executable may require PATH adjustments on Windows."
+        )
+    endif()
 endif()
+
+qt_generate_deploy_app_script(
+    TARGET GCS_player
+    OUTPUT_SCRIPT deploy_script
+    NO_UNSUPPORTED_PLATFORM_ERROR
+)
+install(SCRIPT ${deploy_script})
 
 qt_finalize_executable(GCS_player)

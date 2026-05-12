@@ -1,22 +1,7 @@
 {
   "name": "pid-gui",
   "version-string": "0.1.0",
-  "dependencies": [
-    {
-      "name": "qtbase",
-      "default-features": false,
-      "features": [
-        "widgets"
-      ]
-    },
-    {
-      "name": "qttools",
-      "default-features": false,
-      "features": [
-        "linguist"
-      ]
-    }
-  ],
+  "dependencies": [],
   "features": {
     "serialport": {
       "description": "Install Qt Serial Port for device communication.",
