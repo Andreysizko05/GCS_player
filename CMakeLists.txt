@@ -13,8 +13,37 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH ON)
 set(GCS_GSTREAMER_MODE "AUTO" CACHE STRING "Controls video receiver support: AUTO, ON, or OFF.")
 set_property(CACHE GCS_GSTREAMER_MODE PROPERTY STRINGS AUTO ON OFF)
+set(GCS_GSTREAMER_ROOT "" CACHE PATH
+    "Optional GStreamer SDK/runtime root used to seed PATH and PKG_CONFIG_PATH."
+)
 
 include(cmake/BootstrapQt.cmake)
+
+function(gcs_prepend_env_path env_name new_path)
+    if(NOT new_path OR NOT EXISTS "${new_path}")
+        return()
+    endif()
+
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+        set(_path_separator ";")
+    else()
+        set(_path_separator ":")
+    endif()
+
+    set(_current_value "$ENV{${env_name}}")
+    if(_current_value)
+        set(ENV{${env_name}} "${new_path}${_path_separator}${_current_value}")
+    else()
+        set(ENV{${env_name}} "${new_path}")
+    endif()
+endfunction()
+
+if(GCS_GSTREAMER_ROOT)
+    gcs_prepend_env_path(PATH "${GCS_GSTREAMER_ROOT}/bin")
+    gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib/pkgconfig")
+    gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib64/pkgconfig")
+    gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib/x86_64-linux-gnu/pkgconfig")
+endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
 find_package(PkgConfig QUIET)
@@ -104,69 +133,89 @@ install(TARGETS GCS_player
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-if(GCS_ENABLE_GSTREAMER AND DEFINED VCPKG_TARGET_TRIPLET)
-    set(GCS_VCPKG_TRIPLET_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
-    set(GCS_GST_GIO_MODULE_DIR "${GCS_VCPKG_TRIPLET_DIR}/lib/gio/modules")
-    set(GCS_GST_RUNTIME_DIR "${GCS_VCPKG_TRIPLET_DIR}/bin")
-    set(GCS_GST_TOOL_DIR "${GCS_VCPKG_TRIPLET_DIR}/tools/gstreamer")
+function(gcs_stage_directory_for_target target source_dir destination_subdir comment_text)
+    if(NOT source_dir OR NOT EXISTS "${source_dir}")
+        return()
+    endif()
+
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${source_dir}"
+            "$<TARGET_FILE_DIR:${target}>/${destination_subdir}"
+        COMMENT "${comment_text}"
+    )
+endfunction()
+
+function(gcs_install_directory_if_exists source_dir destination_subdir)
+    if(NOT source_dir OR NOT EXISTS "${source_dir}")
+        return()
+    endif()
+
+    install(DIRECTORY "${source_dir}/"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/${destination_subdir}"
+    )
+endfunction()
+
+if(GCS_ENABLE_GSTREAMER AND PkgConfig_FOUND)
+    pkg_get_variable(GCS_GST_PLUGIN_DIR gstreamer-1.0 pluginsdir)
+    pkg_get_variable(GCS_GST_TOOLS_DIR gstreamer-1.0 toolsdir)
+    pkg_get_variable(GCS_GST_PLUGIN_SCANNER_DIR gstreamer-1.0 pluginscannerdir)
+    pkg_get_variable(GCS_GST_PREFIX gstreamer-1.0 prefix)
+    pkg_get_variable(GCS_GST_GIO_MODULE_DIR gio-2.0 giomoduledir)
 
     if(WIN32)
-        set(GCS_GST_PLUGIN_DIR "${GCS_VCPKG_TRIPLET_DIR}/plugins/gstreamer")
+        set(GCS_GST_RUNTIME_DIR "${GCS_GST_PREFIX}/bin")
+        gcs_stage_directory_for_target(
+            GCS_player
+            "${GCS_GST_PLUGIN_DIR}"
+            "gstreamer-1.0"
+            "Copying GStreamer plugin directory for local execution"
+        )
+        gcs_install_directory_if_exists("${GCS_GST_PLUGIN_DIR}" "gstreamer-1.0")
+
+        gcs_stage_directory_for_target(
+            GCS_player
+            "${GCS_GST_GIO_MODULE_DIR}"
+            "gio/modules"
+            "Copying GIO modules for GStreamer"
+        )
+        gcs_install_directory_if_exists("${GCS_GST_GIO_MODULE_DIR}" "gio/modules")
+
+        gcs_stage_directory_for_target(
+            GCS_player
+            "${GCS_GST_TOOLS_DIR}"
+            "gstreamer-tools"
+            "Copying GStreamer helper tools"
+        )
+        gcs_install_directory_if_exists("${GCS_GST_TOOLS_DIR}" "gstreamer-tools")
+
+        gcs_stage_directory_for_target(
+            GCS_player
+            "${GCS_GST_PLUGIN_SCANNER_DIR}"
+            "gstreamer-tools/gstreamer-1.0"
+            "Copying the GStreamer plugin scanner"
+        )
+        gcs_install_directory_if_exists("${GCS_GST_PLUGIN_SCANNER_DIR}" "gstreamer-tools/gstreamer-1.0")
+
+        gcs_stage_directory_for_target(
+            GCS_player
+            "${GCS_GST_RUNTIME_DIR}"
+            "gstreamer-runtime"
+            "Copying the GStreamer runtime directory"
+        )
+        gcs_install_directory_if_exists("${GCS_GST_RUNTIME_DIR}" "gstreamer-runtime")
     else()
-        set(GCS_GST_PLUGIN_DIR "${GCS_VCPKG_TRIPLET_DIR}/lib/gstreamer-1.0")
-    endif()
-
-    if(EXISTS "${GCS_GST_PLUGIN_DIR}")
+        message(STATUS
+            "GStreamer development files were found. On ${CMAKE_SYSTEM_NAME}, the build "
+            "uses the system GStreamer runtime instead of copying it next to the app."
+        )
         add_custom_command(TARGET GCS_player POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GCS_GST_PLUGIN_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
                 "$<TARGET_FILE_DIR:GCS_player>/gstreamer-1.0"
-            COMMENT "Copying GStreamer plugin directory for local execution"
-        )
-        install(DIRECTORY "${GCS_GST_PLUGIN_DIR}/"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}/gstreamer-1.0"
-        )
-    endif()
-
-    if(EXISTS "${GCS_GST_GIO_MODULE_DIR}")
-        add_custom_command(TARGET GCS_player POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GCS_GST_GIO_MODULE_DIR}"
-                "$<TARGET_FILE_DIR:GCS_player>/gio/modules"
-            COMMENT "Copying GIO modules for GStreamer"
-        )
-        install(DIRECTORY "${GCS_GST_GIO_MODULE_DIR}/"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}/gio/modules"
-        )
-    endif()
-
-    if(EXISTS "${GCS_GST_RUNTIME_DIR}")
-        add_custom_command(TARGET GCS_player POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GCS_GST_RUNTIME_DIR}"
                 "$<TARGET_FILE_DIR:GCS_player>/gstreamer-runtime"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GCS_GST_RUNTIME_DIR}"
                 "$<TARGET_FILE_DIR:GCS_player>/gstreamer-tools"
-            COMMENT "Copying GStreamer release runtime for plugin dependencies"
-        )
-        install(DIRECTORY "${GCS_GST_RUNTIME_DIR}/"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}/gstreamer-runtime"
-        )
-    endif()
-
-    if(EXISTS "${GCS_GST_TOOL_DIR}")
-        add_custom_command(TARGET GCS_player POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GCS_GST_TOOL_DIR}"
-                "$<TARGET_FILE_DIR:GCS_player>/gstreamer-tools"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GCS_GST_RUNTIME_DIR}"
-                "$<TARGET_FILE_DIR:GCS_player>/gstreamer-tools"
-            COMMENT "Copying GStreamer helper tools"
-        )
-        install(DIRECTORY "${GCS_GST_TOOL_DIR}/"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}/gstreamer-tools"
+                "$<TARGET_FILE_DIR:GCS_player>/gio"
+            COMMENT "Removing stale bundled GStreamer directories for system-runtime execution"
         )
     endif()
 endif()
@@ -193,11 +242,51 @@ if(WIN32)
     endif()
 endif()
 
+if(GCS_ENABLE_GSTREAMER AND NOT WIN32)
+    if(APPLE)
+        install(CODE "
+            file(REMOVE_RECURSE
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/GCS_player.app/Contents/MacOS/gstreamer-1.0\"
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/GCS_player.app/Contents/MacOS/gstreamer-runtime\"
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/GCS_player.app/Contents/MacOS/gstreamer-tools\"
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/GCS_player.app/Contents/MacOS/gio\"
+            )
+        ")
+    else()
+        install(CODE "
+            file(REMOVE_RECURSE
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/gstreamer-1.0\"
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/gstreamer-runtime\"
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/gstreamer-tools\"
+                \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/gio\"
+            )
+        ")
+    endif()
+endif()
+
 qt_generate_deploy_app_script(
     TARGET GCS_player
     OUTPUT_SCRIPT deploy_script
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 install(SCRIPT ${deploy_script})
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_test(
+        NAME GCS_player_smoke
+        COMMAND $<TARGET_FILE:GCS_player> --smoke-test --smoke-test-ms 250
+    )
+    set_tests_properties(GCS_player_smoke PROPERTIES
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:GCS_player>
+    )
+
+    if(UNIX AND NOT WIN32)
+        set_tests_properties(GCS_player_smoke PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+    endif()
+endif()
 
 qt_finalize_executable(GCS_player)

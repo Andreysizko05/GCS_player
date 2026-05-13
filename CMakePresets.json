@@ -27,7 +27,7 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
-      "generator": "Visual Studio 18 2026",
+      "generator": "Visual Studio 17 2022",
       "architecture": {
         "strategy": "set",
         "value": "x64"
@@ -76,7 +76,8 @@
       "inherits": "windows-debug",
       "binaryDir": "${sourceDir}/build/windows-debug-gstreamer",
       "cacheVariables": {
-        "GCS_GSTREAMER_MODE": "ON"
+        "GCS_GSTREAMER_MODE": "ON",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/windows-debug-gstreamer"
       }
     },
     {
@@ -102,7 +103,8 @@
       "inherits": "linux-debug",
       "binaryDir": "${sourceDir}/build/linux-debug-gstreamer",
       "cacheVariables": {
-        "GCS_GSTREAMER_MODE": "ON"
+        "GCS_GSTREAMER_MODE": "ON",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/linux-debug-gstreamer"
       }
     },
     {
@@ -128,7 +130,8 @@
       "inherits": "macos-debug",
       "binaryDir": "${sourceDir}/build/macos-debug-gstreamer",
       "cacheVariables": {
-        "GCS_GSTREAMER_MODE": "ON"
+        "GCS_GSTREAMER_MODE": "ON",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/macos-debug-gstreamer"
       }
     }
   ],
@@ -171,6 +174,52 @@
     {
       "name": "macos-debug-gstreamer",
       "configurePreset": "macos-debug-gstreamer"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-debug-gstreamer",
+      "configurePreset": "windows-debug-gstreamer",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-debug-gstreamer",
+      "configurePreset": "linux-debug-gstreamer",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-debug-gstreamer",
+      "configurePreset": "macos-debug-gstreamer",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

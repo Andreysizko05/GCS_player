@@ -108,6 +108,16 @@ void setEnvIfPathExists(const char* name, const QString& path)
     }
 }
 
+QString findFirstExistingPath(const QStringList& candidates)
+{
+    for (const QString& candidate : candidates) {
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
 void prepareGStreamerEnvironment()
 {
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -116,21 +126,32 @@ void prepareGStreamerEnvironment()
     const QString runtimeDir = QDir(appDir).filePath(QStringLiteral("gstreamer-runtime"));
     const QString toolsDir = QDir(appDir).filePath(QStringLiteral("gstreamer-tools"));
 #ifdef Q_OS_WIN
-    const QString scannerPath = QDir(toolsDir).filePath(QStringLiteral("gst-plugin-scanner.exe"));
+    const QString scannerFileName = QStringLiteral("gst-plugin-scanner.exe");
 #else
-    const QString scannerPath = QDir(toolsDir).filePath(QStringLiteral("gst-plugin-scanner"));
+    const QString scannerFileName = QStringLiteral("gst-plugin-scanner");
 #endif
+    const QString scannerPath = findFirstExistingPath({
+        QDir(toolsDir).filePath(scannerFileName),
+        QDir(QDir(toolsDir).filePath(QStringLiteral("gstreamer-1.0"))).filePath(scannerFileName)
+    });
+    const bool hasBundledPluginDir = QFileInfo::exists(pluginDir);
+    const bool hasBundledScanner = QFileInfo::exists(scannerPath);
+    const bool useBundledRuntime = hasBundledPluginDir && hasBundledScanner;
 
     prependPath(appDir);
-    prependPath(runtimeDir);
-    prependPath(toolsDir);
-    setEnvIfPathExists("GST_PLUGIN_PATH", pluginDir);
-    setEnvIfPathExists("GST_PLUGIN_PATH_1_0", pluginDir);
-    setEnvIfPathExists("GST_PLUGIN_SYSTEM_PATH", pluginDir);
-    setEnvIfPathExists("GST_PLUGIN_SYSTEM_PATH_1_0", pluginDir);
-    setEnvIfPathExists("GIO_EXTRA_MODULES", gioModulesDir);
-    setEnvIfPathExists("GST_PLUGIN_SCANNER", scannerPath);
-    setEnvIfPathExists("GST_PLUGIN_SCANNER_1_0", scannerPath);
+
+    if (useBundledRuntime) {
+        prependPath(runtimeDir);
+        prependPath(toolsDir);
+        setEnvIfPathExists("GST_PLUGIN_PATH", pluginDir);
+        setEnvIfPathExists("GST_PLUGIN_PATH_1_0", pluginDir);
+        setEnvIfPathExists("GST_PLUGIN_SYSTEM_PATH", pluginDir);
+        setEnvIfPathExists("GST_PLUGIN_SYSTEM_PATH_1_0", pluginDir);
+        setEnvIfPathExists("GIO_EXTRA_MODULES", gioModulesDir);
+        setEnvIfPathExists("GST_PLUGIN_SCANNER", scannerPath);
+        setEnvIfPathExists("GST_PLUGIN_SCANNER_1_0", scannerPath);
+    }
+
     qputenv("GST_REGISTRY_FORK", QByteArrayLiteral("no"));
     qputenv("GST_REGISTRY_REUSE_PLUGIN_SCANNER", QByteArrayLiteral("no"));
 }
