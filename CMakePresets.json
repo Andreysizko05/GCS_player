@@ -15,7 +15,10 @@
         "GCS_FETCH_QT_WITH_AQT": "ON",
         "GCS_QT_VERSION": "6.10.0",
         "GCS_QT_INSTALL_ROOT": "${sourceDir}/.qt-sdk",
-        "GCS_GSTREAMER_MODE": "AUTO"
+        "GCS_GSTREAMER_MODE": "AUTO",
+        "GCS_FETCH_GSTREAMER": "ON",
+        "GCS_GSTREAMER_VERSION": "1.28.1",
+        "GCS_GSTREAMER_INSTALL_ROOT": "${sourceDir}/.gstreamer-sdk"
       }
     },
     {
@@ -27,7 +30,7 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": {
         "strategy": "set",
         "value": "x64"
@@ -77,6 +80,7 @@
       "binaryDir": "${sourceDir}/build/windows-debug-gstreamer",
       "cacheVariables": {
         "GCS_GSTREAMER_MODE": "ON",
+        "GCS_GSTREAMER_FORCE_DOWNLOAD": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/windows-debug-gstreamer"
       }
     },
@@ -104,6 +108,7 @@
       "binaryDir": "${sourceDir}/build/linux-debug-gstreamer",
       "cacheVariables": {
         "GCS_GSTREAMER_MODE": "ON",
+        "GCS_GSTREAMER_FORCE_DOWNLOAD": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/linux-debug-gstreamer"
       }
     },
@@ -131,6 +136,7 @@
       "binaryDir": "${sourceDir}/build/macos-debug-gstreamer",
       "cacheVariables": {
         "GCS_GSTREAMER_MODE": "ON",
+        "GCS_GSTREAMER_FORCE_DOWNLOAD": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/macos-debug-gstreamer"
       }
     }

@@ -6,8 +6,20 @@
 #include <QTimer>
 #include <QTranslator>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 int main(int argc, char *argv[])
 {
+#ifdef Q_OS_WIN
+    const UINT previousErrorMode = SetErrorMode(0);
+    SetErrorMode(previousErrorMode
+        | SEM_FAILCRITICALERRORS
+        | SEM_NOGPFAULTERRORBOX
+        | SEM_NOOPENFILEERRORBOX);
+#endif
+
     QApplication a(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("GCS_player"));
 
@@ -29,6 +41,7 @@ int main(int argc, char *argv[])
     parser.addOption(smokeTestOption);
     parser.addOption(smokeTestMsOption);
     parser.process(a);
+    const bool smokeTest = parser.isSet(smokeTestOption);
 
     QTranslator translator;
     const QStringList uiLanguages = QLocale::system().uiLanguages();
@@ -39,10 +52,10 @@ int main(int argc, char *argv[])
             break;
         }
     }
-    MainWindow w;
+    MainWindow w(nullptr, !smokeTest);
     w.show();
 
-    if (parser.isSet(smokeTestOption)) {
+    if (smokeTest) {
         bool ok = false;
         const int delayMs = parser.value(smokeTestMsOption).toInt(&ok);
         QTimer::singleShot(ok ? delayMs : 250, &a, &QCoreApplication::quit);

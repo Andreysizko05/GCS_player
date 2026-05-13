@@ -18,6 +18,7 @@ set(GCS_GSTREAMER_ROOT "" CACHE PATH
 )
 
 include(cmake/BootstrapQt.cmake)
+include(cmake/BootstrapGStreamer.cmake)
 
 function(gcs_prepend_env_path env_name new_path)
     if(NOT new_path OR NOT EXISTS "${new_path}")
@@ -38,6 +39,12 @@ function(gcs_prepend_env_path env_name new_path)
     endif()
 endfunction()
 
+string(TOUPPER "${GCS_GSTREAMER_MODE}" GCS_GSTREAMER_MODE)
+
+if(NOT GCS_GSTREAMER_MODE STREQUAL "OFF")
+    gcs_bootstrap_gstreamer()
+endif()
+
 if(GCS_GSTREAMER_ROOT)
     gcs_prepend_env_path(PATH "${GCS_GSTREAMER_ROOT}/bin")
     gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib/pkgconfig")
@@ -49,7 +56,6 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
 find_package(PkgConfig QUIET)
 
 set(GCS_ENABLE_GSTREAMER OFF)
-string(TOUPPER "${GCS_GSTREAMER_MODE}" GCS_GSTREAMER_MODE)
 
 if(GCS_GSTREAMER_MODE STREQUAL "OFF")
     message(STATUS "GStreamer receiver support is disabled by configuration")
@@ -139,6 +145,8 @@ function(gcs_stage_directory_for_target target source_dir destination_subdir com
     endif()
 
     add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_FILE_DIR:${target}>/${destination_subdir}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${source_dir}"
             "$<TARGET_FILE_DIR:${target}>/${destination_subdir}"
@@ -234,6 +242,22 @@ if(WIN32)
                 "$<TARGET_FILE:GCS_player>"
             COMMENT "Deploying the Qt runtime for local Windows execution"
         )
+        add_custom_command(TARGET GCS_player POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${PROJECT_SOURCE_DIR}/qt.conf"
+                "$<TARGET_FILE_DIR:GCS_player>/qt.conf"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                "$<TARGET_FILE_DIR:GCS_player>/plugins"
+            COMMENT "Normalizing Qt plugin lookup for local Windows execution"
+        )
+        if(GCS_ENABLE_GSTREAMER AND GCS_GST_RUNTIME_DIR AND EXISTS "${GCS_GST_RUNTIME_DIR}")
+            add_custom_command(TARGET GCS_player POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${GCS_GST_RUNTIME_DIR}"
+                    "$<TARGET_FILE_DIR:GCS_player>"
+                COMMENT "Overlaying matching GStreamer runtime DLLs next to the executable"
+            )
+        endif()
     else()
         message(WARNING
             "windeployqt was not found under ${GCS_QT_INSTALL_PREFIX}/bin. "
@@ -282,7 +306,11 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY $<TARGET_FILE_DIR:GCS_player>
     )
 
-    if(UNIX AND NOT WIN32)
+    if(WIN32)
+        set_tests_properties(GCS_player_smoke PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:GCS_player>"
+        )
+    elseif(UNIX)
         set_tests_properties(GCS_player_smoke PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )

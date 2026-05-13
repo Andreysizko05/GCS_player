@@ -9,8 +9,6 @@
 #include <QPainter>
 #include <QStringList>
 
-#include <QtMultimedia/QVideoFrameFormat>
-
 #include <gst/video/video-info.h>
 
 #include <algorithm>
@@ -22,22 +20,7 @@ namespace
 QVideoFrame imageToVideoFrame(const QImage& image)
 {
     const QImage source = image.convertToFormat(QImage::Format_ARGB32);
-    QVideoFrame frame(QVideoFrameFormat(source.size(), QVideoFrameFormat::Format_BGRA8888));
-
-    if (!frame.map(QVideoFrame::WriteOnly)) {
-        return {};
-    }
-
-    const int destinationStride = frame.bytesPerLine(0);
-    const int rowBytes = std::min(destinationStride, static_cast<int>(source.bytesPerLine()));
-    uchar* destination = frame.bits(0);
-
-    for (int y = 0; y < source.height(); ++y) {
-        std::memcpy(destination + y * destinationStride, source.constScanLine(y), rowBytes);
-    }
-
-    frame.unmap();
-    return frame;
+    return QVideoFrame(source);
 }
 
 QString createMessageText(const QString& line)
@@ -549,26 +532,39 @@ GstFlowReturn GstVideoReceiver::processSample(GstAppSink* sink)
     const int height = static_cast<int>(GST_VIDEO_INFO_HEIGHT(&videoInfo));
     const int stride = GST_VIDEO_INFO_PLANE_STRIDE(&videoInfo, 0);
 
-    QVideoFrame frame(QVideoFrameFormat(QSize(width, height), QVideoFrameFormat::Format_BGRA8888));
-    const bool frameMapped = frame.map(QVideoFrame::WriteOnly);
+    if (width <= 0 || height <= 0 || stride <= 0) {
+        gst_buffer_unmap(buffer, &mapInfo);
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
 
-    if (frameMapped) {
-        const int destinationStride = frame.bytesPerLine(0);
-        const int rowBytes = std::min(destinationStride, stride);
-        uchar* destination = frame.bits(0);
-        const auto* source = reinterpret_cast<const uchar*>(mapInfo.data);
+    QImage image(width, height, QImage::Format_ARGB32);
+    if (image.isNull()) {
+        gst_buffer_unmap(buffer, &mapInfo);
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
 
-        for (int y = 0; y < height; ++y) {
-            std::memcpy(destination + y * destinationStride, source + y * stride, rowBytes);
-        }
+    const int destinationStride = image.bytesPerLine();
+    const int rowBytes = std::min(destinationStride, stride);
+    const auto* source = reinterpret_cast<const uchar*>(mapInfo.data);
+    uchar* destination = image.bits();
 
-        frame.unmap();
+    if (rowBytes <= 0 || mapInfo.size < static_cast<gsize>((height - 1) * stride + rowBytes)) {
+        gst_buffer_unmap(buffer, &mapInfo);
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
+
+    for (int y = 0; y < height; ++y) {
+        std::memcpy(destination + y * destinationStride, source + y * stride, rowBytes);
     }
 
     gst_buffer_unmap(buffer, &mapInfo);
     gst_sample_unref(sample);
 
-    if (!frameMapped) {
+    QVideoFrame frame(image);
+    if (!frame.isValid()) {
         return GST_FLOW_OK;
     }
 

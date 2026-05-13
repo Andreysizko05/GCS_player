@@ -37,13 +37,16 @@ How GStreamer is found:
 
 - CMake asks `pkg-config` for compiler/linker flags and creates `PkgConfig::GSTREAMER`.
 - If you have a non-standard GStreamer installation, set `GCS_GSTREAMER_ROOT` to its prefix. CMake will prepend `<root>/bin` to `PATH` and common `pkgconfig` directories to `PKG_CONFIG_PATH`.
+- The `*-gstreamer` presets set `GCS_GSTREAMER_FORCE_DOWNLOAD=ON`, so they use a project-local SDK when supported instead of relying on a partial system install.
 - At runtime, [GstVideoReceiver.cpp](GstVideoReceiver.cpp) looks for sibling folders like `gstreamer-1.0`, `gio/modules`, `gstreamer-runtime`, and `gstreamer-tools`, then exports `GST_PLUGIN_PATH`, `GIO_EXTRA_MODULES`, `GST_PLUGIN_SCANNER`, and `PATH` before calling `gst_init_check()`.
 
 How GStreamer files are staged:
 
 - Qt itself is downloaded automatically.
-- GStreamer is not downloaded automatically by this project.
-- For development, install the GStreamer runtime and development files for your OS so `pkg-config` can see them.
+- GStreamer is also bootstrapped by [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake) when `GCS_GSTREAMER_MODE=ON` and `GCS_FETCH_GSTREAMER=ON`.
+- On Windows, CMake downloads the official GStreamer MSVC SDK installer into `.gstreamer-sdk` and installs it silently into a project-local prefix.
+- On macOS, CMake downloads the official runtime and development `.pkg` files and merges them into `.gstreamer-sdk`.
+- On Linux, the project follows QGroundControl's default desktop approach and uses the system GStreamer packages under `/usr`; install the distro development packages if `pkg-config` cannot find them.
 - When GStreamer is enabled, CMake queries `pkg-config` for `pluginsdir`, `pluginscannerdir`, `giomoduledir`, and related paths.
 - On Windows, those directories are copied next to the built app, because local `.exe` execution usually needs nearby DLLs, plugins, and the plugin scanner.
 - On macOS and Linux, the default expectation is a system-installed GStreamer runtime. The app will still use local sibling folders if they exist, but the build does not force-copy the whole GStreamer tree there.
@@ -77,4 +80,4 @@ ctest --preset windows-debug
 .\build\windows-debug\Debug\GCS_player.exe
 ```
 
-The default Windows preset targets `Visual Studio 2022`, which matches the `aqtinstall` desktop package `win64_msvc2022_64`.
+The default Windows preset targets `Visual Studio 2026`. Qt is still fetched from the official `aqtinstall` desktop package `win64_msvc2022_64`, which is the current prebuilt MSVC Qt package used by this project.

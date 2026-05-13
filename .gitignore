@@ -3,6 +3,7 @@ build_*/
 install/
 install_*/
 .qt-sdk/
+.gstreamer-sdk/
 .vscode/
 
 

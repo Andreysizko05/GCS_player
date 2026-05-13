@@ -8,7 +8,7 @@
 #include <QtMultimediaWidgets/QVideoWidget>
 #endif
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
@@ -18,20 +18,23 @@ MainWindow::MainWindow(QWidget *parent)
     ui->videoFrameLabel->setAlignment(Qt::AlignCenter);
 
 #ifdef GCS_ENABLE_GSTREAMER
-    mVideoWidget = new QVideoWidget(ui->centralwidget);
-    mVideoWidget->setObjectName(QStringLiteral("videoFrameSinkWidget"));
-    mVideoWidget->setAspectRatioMode(Qt::KeepAspectRatio);
-    mVideoWidget->setStyleSheet(QStringLiteral("background-color: black;"));
-    mVideoWidget->setGeometry(ui->videoFrameLabel->geometry());
-    mVideoWidget->show();
-    ui->videoFrameLabel->hide();
+    if (startVideoReceiver) {
+        mVideoWidget = new QVideoWidget(ui->centralwidget);
+        mVideoWidget->setObjectName(QStringLiteral("videoFrameSinkWidget"));
+        mVideoWidget->setAspectRatioMode(Qt::KeepAspectRatio);
+        mVideoWidget->setStyleSheet(QStringLiteral("background-color: black;"));
+        mVideoWidget->setGeometry(ui->videoFrameLabel->geometry());
+        mVideoWidget->show();
+        ui->videoFrameLabel->hide();
 
-    mVideoReceiver = new GstVideoReceiver(this);
-    connect(mVideoReceiver, &GstVideoReceiver::frameReady, this, &MainWindow::onVideoFrameReady);
-    connect(mVideoReceiver, &GstVideoReceiver::receiverMessage, this, &MainWindow::onVideoReceiverMessage);
-    connect(mVideoReceiver, &GstVideoReceiver::receiverError, this, &MainWindow::onVideoReceiverError);
-    mVideoReceiver->start();
+        mVideoReceiver = new GstVideoReceiver(this);
+        connect(mVideoReceiver, &GstVideoReceiver::frameReady, this, &MainWindow::onVideoFrameReady);
+        connect(mVideoReceiver, &GstVideoReceiver::receiverMessage, this, &MainWindow::onVideoReceiverMessage);
+        connect(mVideoReceiver, &GstVideoReceiver::receiverError, this, &MainWindow::onVideoReceiverError);
+        mVideoReceiver->start();
+    }
 #else
+    Q_UNUSED(startVideoReceiver)
     ui->videoFrameLabel->setText(QStringLiteral("GStreamer support is disabled.\nUse a *-gstreamer preset to enable video."));
 #endif
 }
