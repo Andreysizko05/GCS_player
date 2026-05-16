@@ -105,8 +105,15 @@ target_link_libraries(GCS_player PRIVATE
 )
 
 if(NOT WIN32 AND GSTREAMER_LIBRARY_DIRS)
-    set_property(TARGET GCS_player APPEND PROPERTY BUILD_RPATH "${GSTREAMER_LIBRARY_DIRS}")
-    set_property(TARGET GCS_player APPEND PROPERTY INSTALL_RPATH "${GSTREAMER_LIBRARY_DIRS}")
+    set(_gcs_append_gstreamer_rpath TRUE)
+    # Homebrew pkg-config modules already pass -Wl,-rpath for their lib dirs.
+    if(APPLE AND GCS_GSTREAMER_SOURCE MATCHES "^homebrew")
+        set(_gcs_append_gstreamer_rpath FALSE)
+    endif()
+    if(_gcs_append_gstreamer_rpath)
+        set_property(TARGET GCS_player APPEND PROPERTY BUILD_RPATH "${GSTREAMER_LIBRARY_DIRS}")
+        set_property(TARGET GCS_player APPEND PROPERTY INSTALL_RPATH "${GSTREAMER_LIBRARY_DIRS}")
+    endif()
 endif()
 
 set_target_properties(GCS_player PROPERTIES

@@ -4,6 +4,7 @@ option(GCS_FETCH_GSTREAMER "Automatically download the managed GStreamer SDK whe
 option(GCS_GSTREAMER_FORCE_DOWNLOAD "Refresh the managed GStreamer SDK; cannot be combined with external/system GStreamer." OFF)
 option(GCS_ALLOW_EXTERNAL_GSTREAMER "Allow an explicitly provided GStreamer SDK instead of the managed SDK." OFF)
 option(GCS_USE_SYSTEM_GSTREAMER "Allow GStreamer discovery from common system environment variables and PATH." OFF)
+option(GCS_PREFER_HOMEBREW_GSTREAMER "Prefer a complete Homebrew GStreamer SDK on macOS before downloading the managed SDK." ON)
 option(GCS_GSTREAMER_REQUIRE_CHECKSUM "Fail if an auto-downloaded GStreamer package has no pinned checksum." OFF)
 set(GCS_MINIMUM_GSTREAMER_VERSION "1.20.0" CACHE STRING
     "Minimum acceptable GStreamer version for auto-discovered or explicitly provided SDKs."
@@ -190,6 +191,272 @@ function(gcs_gst_get_managed_root output_var)
     set(${output_var} "${_root}" PARENT_SCOPE)
 endfunction()
 
+function(gcs_gst_find_homebrew output_executable output_prefix)
+    set(_found_brew_executable "")
+    set(_brew_prefix "")
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        unset(_found_brew_executable)
+        unset(_found_brew_executable CACHE)
+        find_program(_found_brew_executable
+            NAMES brew
+            HINTS "/opt/homebrew/bin" "/usr/local/bin"
+        )
+        if(_found_brew_executable)
+            execute_process(
+                COMMAND "${_found_brew_executable}" --prefix
+                RESULT_VARIABLE _brew_prefix_result
+                OUTPUT_VARIABLE _brew_prefix
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(NOT _brew_prefix_result EQUAL 0 OR NOT _brew_prefix)
+                set(_brew_prefix "")
+            endif()
+        endif()
+    endif()
+
+    set(${output_executable} "${_found_brew_executable}" PARENT_SCOPE)
+    set(${output_prefix} "${_brew_prefix}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_get_homebrew_formula_prefix formula output_var)
+    set(_formula_prefix "")
+    gcs_gst_find_homebrew(_brew_executable _brew_prefix)
+    if(_brew_executable)
+        execute_process(
+            COMMAND "${_brew_executable}" --prefix "${formula}"
+            RESULT_VARIABLE _formula_prefix_result
+            OUTPUT_VARIABLE _formula_prefix
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(NOT _formula_prefix_result EQUAL 0 OR NOT _formula_prefix)
+            set(_formula_prefix "")
+        endif()
+    endif()
+
+    set(${output_var} "${_formula_prefix}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_homebrew_root_info root_dir output_is_homebrew output_prefix)
+    set(_is_homebrew FALSE)
+    set(_homebrew_prefix "")
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND root_dir AND EXISTS "${root_dir}")
+        gcs_gst_find_homebrew(_brew_executable _brew_prefix)
+        if(_brew_prefix AND EXISTS "${_brew_prefix}")
+            file(REAL_PATH "${root_dir}" _root_real)
+            file(REAL_PATH "${_brew_prefix}" _brew_real)
+            file(TO_CMAKE_PATH "${_root_real}" _root_real)
+            file(TO_CMAKE_PATH "${_brew_real}" _brew_real)
+
+            string(APPEND _root_real "/")
+            string(APPEND _brew_real "/")
+            string(FIND "${_root_real}" "${_brew_real}" _brew_pos)
+            if(_brew_pos EQUAL 0)
+                set(_is_homebrew TRUE)
+                set(_homebrew_prefix "${_brew_prefix}")
+            endif()
+        endif()
+    endif()
+
+    set(${output_is_homebrew} "${_is_homebrew}" PARENT_SCOPE)
+    set(${output_prefix} "${_homebrew_prefix}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_resolve_active_macos_sdk_path output_var)
+    set(_sdk_path "")
+    if(CMAKE_OSX_SYSROOT AND EXISTS "${CMAKE_OSX_SYSROOT}")
+        set(_sdk_path "${CMAKE_OSX_SYSROOT}")
+    elseif(DEFINED ENV{SDKROOT} AND NOT "$ENV{SDKROOT}" STREQUAL "" AND EXISTS "$ENV{SDKROOT}")
+        set(_sdk_path "$ENV{SDKROOT}")
+    else()
+        unset(_xcrun_sdk_path)
+        execute_process(
+            COMMAND xcrun --show-sdk-path
+            OUTPUT_VARIABLE _xcrun_sdk_path
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_xcrun_sdk_path AND EXISTS "${_xcrun_sdk_path}")
+            set(_sdk_path "${_xcrun_sdk_path}")
+        endif()
+    endif()
+
+    if(_sdk_path)
+        get_filename_component(_sdk_path "${_sdk_path}" REALPATH)
+    endif()
+
+    set(${output_var} "${_sdk_path}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_homebrew_macos_pkgconfig_version_key sdk_path output_var)
+    set(_version_key "")
+    if(sdk_path)
+        get_filename_component(_sdk_name "${sdk_path}" NAME)
+        if(_sdk_name MATCHES "^MacOSX10\\.([0-9]+)\\.sdk$")
+            set(_version_key "10.${CMAKE_MATCH_1}")
+        elseif(_sdk_name MATCHES "^MacOSX([0-9]+)\\.[0-9]+\\.sdk$")
+            set(_version_key "${CMAKE_MATCH_1}")
+        elseif(_sdk_name MATCHES "^MacOSX([0-9]+)\\.sdk$")
+            set(_version_key "${CMAKE_MATCH_1}")
+        endif()
+    endif()
+
+    set(${output_var} "${_version_key}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_select_homebrew_macos_pkgconfig_dir homebrew_prefix output_var)
+    set(_selected_dir "")
+    set(_mac_pkgconfig_base "${homebrew_prefix}/Library/Homebrew/os/mac/pkgconfig")
+    if(NOT IS_DIRECTORY "${_mac_pkgconfig_base}")
+        set(${output_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    gcs_gst_resolve_active_macos_sdk_path(_active_sdk_path)
+    gcs_gst_homebrew_macos_pkgconfig_version_key("${_active_sdk_path}" _version_key)
+    if(_version_key AND IS_DIRECTORY "${_mac_pkgconfig_base}/${_version_key}"
+            AND EXISTS "${_mac_pkgconfig_base}/${_version_key}/libffi.pc")
+        set(_selected_dir "${_mac_pkgconfig_base}/${_version_key}")
+    endif()
+
+    if(NOT _selected_dir)
+        file(GLOB _candidate_dirs LIST_DIRECTORIES true "${_mac_pkgconfig_base}/*")
+        foreach(_candidate_dir IN LISTS _candidate_dirs)
+            if(NOT EXISTS "${_candidate_dir}/libffi.pc")
+                continue()
+            endif()
+
+            file(STRINGS "${_candidate_dir}/libffi.pc" _sdkroot_lines REGEX "^homebrew_sdkroot=")
+            if(NOT _sdkroot_lines)
+                continue()
+            endif()
+
+            string(REGEX REPLACE "^homebrew_sdkroot=" "" _candidate_sdk_path "${_sdkroot_lines}")
+            if(_active_sdk_path AND _candidate_sdk_path STREQUAL _active_sdk_path)
+                set(_selected_dir "${_candidate_dir}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(NOT _selected_dir AND _active_sdk_path)
+        file(GLOB _candidate_dirs LIST_DIRECTORIES true "${_mac_pkgconfig_base}/*")
+        foreach(_candidate_dir IN LISTS _candidate_dirs)
+            if(NOT EXISTS "${_candidate_dir}/libffi.pc")
+                continue()
+            endif()
+
+            file(STRINGS "${_candidate_dir}/libffi.pc" _sdkroot_lines REGEX "^homebrew_sdkroot=")
+            if(NOT _sdkroot_lines)
+                continue()
+            endif()
+
+            string(REGEX REPLACE "^homebrew_sdkroot=" "" _candidate_sdk_path "${_sdkroot_lines}")
+            if(EXISTS "${_candidate_sdk_path}")
+                set(_selected_dir "${_candidate_dir}")
+            endif()
+        endforeach()
+    endif()
+
+    set(${output_var} "${_selected_dir}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_collect_homebrew_pkgconfig_dirs root_dir output_var)
+    set(_homebrew_pkgconfig_dirs)
+    gcs_gst_homebrew_root_info("${root_dir}" _is_homebrew_root _homebrew_prefix)
+    if(_is_homebrew_root)
+        list(APPEND _homebrew_pkgconfig_dirs
+            "${_homebrew_prefix}/lib/pkgconfig"
+            "${_homebrew_prefix}/share/pkgconfig"
+        )
+
+        gcs_gst_select_homebrew_macos_pkgconfig_dir("${_homebrew_prefix}" _homebrew_macos_pkgconfig_dir)
+        if(_homebrew_macos_pkgconfig_dir)
+            list(APPEND _homebrew_pkgconfig_dirs "${_homebrew_macos_pkgconfig_dir}")
+        endif()
+
+        foreach(_formula IN ITEMS
+            gstreamer
+            gst-plugins-base
+            gst-plugins-good
+            gst-plugins-bad
+            gst-libav
+            glib
+            libffi
+        )
+            gcs_gst_get_homebrew_formula_prefix("${_formula}" _formula_prefix)
+            if(_formula_prefix)
+                list(APPEND _homebrew_pkgconfig_dirs
+                    "${_formula_prefix}/lib/pkgconfig"
+                    "${_formula_prefix}/share/pkgconfig"
+                )
+            endif()
+        endforeach()
+    endif()
+
+    set(_existing_dirs)
+    foreach(_dir IN LISTS _homebrew_pkgconfig_dirs)
+        if(IS_DIRECTORY "${_dir}")
+            list(APPEND _existing_dirs "${_dir}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _existing_dirs)
+
+    set(${output_var} "${_existing_dirs}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_find_pkg_config_executable root_dir output_var)
+    set(_pkg_config_executable "")
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        if(EXISTS "${root_dir}/bin/pkg-config.exe")
+            set(_pkg_config_executable "${root_dir}/bin/pkg-config.exe")
+        else()
+            unset(_found_pkg_config_executable)
+            unset(_found_pkg_config_executable CACHE)
+            find_program(_found_pkg_config_executable NAMES pkg-config pkgconf pkg-config.exe pkgconf.exe)
+            if(_found_pkg_config_executable)
+                set(_pkg_config_executable "${_found_pkg_config_executable}")
+            endif()
+        endif()
+    else()
+        if(EXISTS "${root_dir}/bin/pkg-config")
+            set(_pkg_config_executable "${root_dir}/bin/pkg-config")
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            gcs_gst_find_homebrew(_brew_executable _brew_prefix)
+            if(_brew_prefix)
+                foreach(_candidate IN ITEMS
+                    "${_brew_prefix}/bin/pkg-config"
+                    "${_brew_prefix}/bin/pkgconf"
+                    "/opt/homebrew/bin/pkg-config"
+                    "/opt/homebrew/bin/pkgconf"
+                    "/usr/local/bin/pkg-config"
+                    "/usr/local/bin/pkgconf"
+                )
+                    if(EXISTS "${_candidate}")
+                        set(_pkg_config_executable "${_candidate}")
+                        break()
+                    endif()
+                endforeach()
+            endif()
+        endif()
+
+        if(NOT _pkg_config_executable)
+            unset(_found_pkg_config_executable)
+            unset(_found_pkg_config_executable CACHE)
+            find_program(_found_pkg_config_executable NAMES pkg-config pkgconf pkg-config.exe pkgconf.exe)
+            if(_found_pkg_config_executable)
+                set(_pkg_config_executable "${_found_pkg_config_executable}")
+            endif()
+        endif()
+    endif()
+
+    set(${output_var} "${_pkg_config_executable}" PARENT_SCOPE)
+endfunction()
+
 function(gcs_gst_read_pc_version root_dir output_var)
     set(_pc_version "")
     gcs_gst_pkgconfig_dirs("${root_dir}" _pkgconfig_dirs)
@@ -215,17 +482,16 @@ endfunction()
 
 function(gcs_gst_prepare_pkg_config root_dir output_libdir output_executable output_args)
     gcs_gst_pkgconfig_dirs("${root_dir}" _pkgconfig_dirs)
+    gcs_gst_collect_homebrew_pkgconfig_dirs("${root_dir}" _homebrew_pkgconfig_dirs)
+    list(APPEND _pkgconfig_dirs ${_homebrew_pkgconfig_dirs})
+    list(REMOVE_DUPLICATES _pkgconfig_dirs)
     gcs_gst_join_paths(_pkg_config_libdir ${_pkgconfig_dirs})
 
     set(_pkg_config_executable "")
     set(_pkg_config_args)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        if(EXISTS "${root_dir}/bin/pkg-config.exe")
-            set(_pkg_config_executable "${root_dir}/bin/pkg-config.exe")
-        else()
-            find_program(_pkg_config_executable NAMES pkg-config pkgconf pkg-config.exe pkgconf.exe)
-        endif()
+        gcs_gst_find_pkg_config_executable("${root_dir}" _pkg_config_executable)
 
         if(_pkg_config_executable)
             set(_pkg_config_args
@@ -235,10 +501,8 @@ function(gcs_gst_prepare_pkg_config root_dir output_libdir output_executable out
                 "--define-variable=includedir=${root_dir}/include"
             )
         endif()
-    elseif(EXISTS "${root_dir}/bin/pkg-config")
-        set(_pkg_config_executable "${root_dir}/bin/pkg-config")
     else()
-        find_program(_pkg_config_executable NAMES pkg-config pkgconf pkg-config.exe pkgconf.exe)
+        gcs_gst_find_pkg_config_executable("${root_dir}" _pkg_config_executable)
     endif()
 
     set(${output_libdir} "${_pkg_config_libdir}" PARENT_SCOPE)
@@ -426,6 +690,82 @@ function(gcs_gst_join_paths output_var)
     set(${output_var} "${_joined}" PARENT_SCOPE)
 endfunction()
 
+function(gcs_gst_plugin_library_name plugin output_var)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        set(_plugin_library_name "gst${plugin}.dll")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        set(_plugin_library_name "libgst${plugin}.dylib")
+    else()
+        set(_plugin_library_name "libgst${plugin}.so")
+    endif()
+
+    set(${output_var} "${_plugin_library_name}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_prepare_plugin_inspection_dir plugins_dir expected_version output_var)
+    set(_inspection_plugins_dir "${plugins_dir}")
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        set(_inspection_plugins_dir
+            "${CMAKE_BINARY_DIR}/gstreamer-required-plugins-${expected_version}"
+        )
+        file(REMOVE_RECURSE "${_inspection_plugins_dir}")
+        file(MAKE_DIRECTORY "${_inspection_plugins_dir}")
+
+        foreach(_plugin IN LISTS GCS_REQUIRED_GSTREAMER_PLUGINS)
+            gcs_gst_plugin_library_name("${_plugin}" _plugin_library_name)
+            set(_plugin_library "${plugins_dir}/${_plugin_library_name}")
+            if(EXISTS "${_plugin_library}")
+                file(CREATE_LINK
+                    "${_plugin_library}"
+                    "${_inspection_plugins_dir}/${_plugin_library_name}"
+                    SYMBOLIC
+                    COPY_ON_ERROR
+                )
+            endif()
+        endforeach()
+    endif()
+
+    set(${output_var} "${_inspection_plugins_dir}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_registry_file expected_version output_var)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        set(_registry_file "${CMAKE_BINARY_DIR}/gstreamer-registry-${expected_version}-required.bin")
+    else()
+        set(_registry_file "${CMAKE_BINARY_DIR}/gstreamer-registry-${expected_version}.bin")
+    endif()
+
+    set(${output_var} "${_registry_file}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_disable_macos_python_plugin root_dir)
+    if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+        return()
+    endif()
+
+    gcs_gst_get_managed_root(_managed_root)
+    if(NOT _managed_root OR NOT root_dir OR NOT EXISTS "${root_dir}" OR NOT EXISTS "${_managed_root}")
+        return()
+    endif()
+
+    file(REAL_PATH "${root_dir}" _root_real)
+    file(REAL_PATH "${_managed_root}" _managed_real)
+    if(NOT "${_root_real}" STREQUAL "${_managed_real}")
+        return()
+    endif()
+
+    set(_python_plugin "${root_dir}/lib/gstreamer-1.0/libgstpython.dylib")
+    set(_disabled_python_plugin "${_python_plugin}.disabled")
+    if(EXISTS "${_python_plugin}" AND NOT EXISTS "${_disabled_python_plugin}")
+        file(RENAME "${_python_plugin}" "${_disabled_python_plugin}")
+        message(STATUS
+            "Disabled unused managed GStreamer Python plugin to avoid requiring "
+            "Python3.framework/Versions/3.9: ${_disabled_python_plugin}"
+        )
+    endif()
+endfunction()
+
 function(gcs_gst_root_complete root_dir output_var)
     set(_is_complete TRUE)
 
@@ -506,12 +846,19 @@ function(gcs_gst_validate_plugins_for_root root_dir expected_version output_ok o
             set(_validation_reason "gst-inspect-1.0 was not found under ${root_dir}/bin")
         else()
             set(_gst_inspect "${root_dir}/bin/${_gst_inspect_name}")
+            gcs_gst_prepare_plugin_inspection_dir(
+                "${_gst_pluginsdir}" "${expected_version}" _gst_inspection_pluginsdir
+            )
+            gcs_gst_registry_file("${expected_version}" _gst_registry_file)
+            if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+                file(REMOVE "${_gst_registry_file}")
+            endif()
             set(_inspect_env
-                "GST_PLUGIN_PATH=${_gst_pluginsdir}"
-                "GST_PLUGIN_PATH_1_0=${_gst_pluginsdir}"
-                "GST_PLUGIN_SYSTEM_PATH=${_gst_pluginsdir}"
-                "GST_PLUGIN_SYSTEM_PATH_1_0=${_gst_pluginsdir}"
-                "GST_REGISTRY=${CMAKE_BINARY_DIR}/gstreamer-registry-${expected_version}.bin"
+                "GST_PLUGIN_PATH=${_gst_inspection_pluginsdir}"
+                "GST_PLUGIN_PATH_1_0=${_gst_inspection_pluginsdir}"
+                "GST_PLUGIN_SYSTEM_PATH=${_gst_inspection_pluginsdir}"
+                "GST_PLUGIN_SYSTEM_PATH_1_0=${_gst_inspection_pluginsdir}"
+                "GST_REGISTRY=${_gst_registry_file}"
                 "GST_REGISTRY_FORK=no"
                 "GST_REGISTRY_REUSE_PLUGIN_SCANNER=no"
             )
@@ -645,6 +992,18 @@ function(gcs_gst_collect_system_candidates output_var)
             gcs_gst_add_env_candidate("$ENV{${_env_name}}" _candidates)
         endif()
     endforeach()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND GCS_PREFER_HOMEBREW_GSTREAMER)
+        gcs_gst_get_homebrew_formula_prefix("gstreamer" _homebrew_gstreamer_prefix)
+        if(_homebrew_gstreamer_prefix)
+            gcs_gst_add_env_candidate("${_homebrew_gstreamer_prefix}" _candidates)
+        endif()
+
+        gcs_gst_find_homebrew(_homebrew_executable _homebrew_prefix)
+        if(_homebrew_prefix)
+            gcs_gst_add_env_candidate("${_homebrew_prefix}" _candidates)
+        endif()
+    endif()
 
     find_program(_system_gst_inspect NAMES gst-inspect-1.0 gst-inspect-1.0.exe)
     if(_system_gst_inspect)
@@ -853,6 +1212,7 @@ function(gcs_gst_download_macos_sdk output_root_var)
 
     gcs_gst_root_complete("${_sdk_root}" _sdk_complete)
     if(_sdk_complete AND EXISTS "${_sdk_root}/.merge_complete" AND NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
+        gcs_gst_disable_macos_python_plugin("${_sdk_root}")
         set(${output_root_var} "${_sdk_root}" PARENT_SCOPE)
         return()
     endif()
@@ -902,6 +1262,7 @@ function(gcs_gst_download_macos_sdk output_root_var)
         file(REMOVE_RECURSE "${_sdk_root}")
         message(FATAL_ERROR "Downloaded macOS GStreamer SDK is incomplete.")
     endif()
+    gcs_gst_disable_macos_python_plugin("${_sdk_root}")
 
     set(${output_root_var} "${_sdk_root}" PARENT_SCOPE)
 endfunction()
@@ -963,6 +1324,15 @@ function(gcs_gst_path_must_be_under_root path root_dir label)
     endif()
 endfunction()
 
+function(gcs_gst_path_must_be_under_root_or_homebrew path root_dir label)
+    gcs_gst_homebrew_root_info("${root_dir}" _is_homebrew_root _homebrew_prefix)
+    if(_is_homebrew_root)
+        gcs_gst_path_must_be_under_root("${path}" "${_homebrew_prefix}" "${label}")
+    else()
+        gcs_gst_path_must_be_under_root("${path}" "${root_dir}" "${label}")
+    endif()
+endfunction()
+
 function(gcs_verify_gstreamer_pkg_config_paths)
     if(NOT GCS_GSTREAMER_ROOT)
         message(FATAL_ERROR "GCS_GSTREAMER_ROOT is empty; refusing to query system GStreamer.")
@@ -987,7 +1357,9 @@ function(gcs_verify_gstreamer_pkg_config_paths)
         gcs_gst_path_must_be_under_root("${_gst_toolsdir}" "${GCS_GSTREAMER_ROOT}" "GStreamer toolsdir")
     endif()
     if(_gst_giomoduledir)
-        gcs_gst_path_must_be_under_root("${_gst_giomoduledir}" "${GCS_GSTREAMER_ROOT}" "GIO module dir")
+        gcs_gst_path_must_be_under_root_or_homebrew(
+            "${_gst_giomoduledir}" "${GCS_GSTREAMER_ROOT}" "GIO module dir"
+        )
     endif()
 endfunction()
 
@@ -1023,12 +1395,20 @@ function(gcs_verify_gstreamer_plugins)
         set(_scanner_name "gst-plugin-scanner")
     endif()
 
+    gcs_gst_prepare_plugin_inspection_dir(
+        "${_gst_pluginsdir}" "${_expected_gstreamer_version}" _gst_inspection_pluginsdir
+    )
+    gcs_gst_registry_file("${_expected_gstreamer_version}" _gst_registry_file)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        file(REMOVE "${_gst_registry_file}")
+    endif()
+
     set(_inspect_env
-        "GST_PLUGIN_PATH=${_gst_pluginsdir}"
-        "GST_PLUGIN_PATH_1_0=${_gst_pluginsdir}"
-        "GST_PLUGIN_SYSTEM_PATH=${_gst_pluginsdir}"
-        "GST_PLUGIN_SYSTEM_PATH_1_0=${_gst_pluginsdir}"
-        "GST_REGISTRY=${CMAKE_BINARY_DIR}/gstreamer-registry-${_expected_gstreamer_version}.bin"
+        "GST_PLUGIN_PATH=${_gst_inspection_pluginsdir}"
+        "GST_PLUGIN_PATH_1_0=${_gst_inspection_pluginsdir}"
+        "GST_PLUGIN_SYSTEM_PATH=${_gst_inspection_pluginsdir}"
+        "GST_PLUGIN_SYSTEM_PATH_1_0=${_gst_inspection_pluginsdir}"
+        "GST_REGISTRY=${_gst_registry_file}"
         "GST_REGISTRY_FORK=no"
         "GST_REGISTRY_REUSE_PLUGIN_SCANNER=no"
     )
@@ -1044,7 +1424,7 @@ function(gcs_verify_gstreamer_plugins)
     message(STATUS
         "Checking ${_required_plugin_count} required GStreamer plugins with ${_gst_inspect}. "
         "The first configure in a new build directory can take a while while gst-inspect "
-        "creates ${CMAKE_BINARY_DIR}/gstreamer-registry-${_expected_gstreamer_version}.bin."
+        "creates ${_gst_registry_file}."
     )
 
     set(_plugin_index 0)
@@ -1067,12 +1447,12 @@ function(gcs_verify_gstreamer_plugins)
             if(_inspect_result MATCHES "timeout")
                 message(FATAL_ERROR
                     "Timed out while inspecting GStreamer plugin '${_plugin}'.\n"
-                    "Registry file: ${CMAKE_BINARY_DIR}/gstreamer-registry-${_expected_gstreamer_version}.bin\n"
+                    "Registry file: ${_gst_registry_file}\n"
                     "${_inspect_stdout}\n${_inspect_stderr}"
                 )
             endif()
             message(FATAL_ERROR
-                "Required GStreamer plugin '${_plugin}' was not found in ${_gst_pluginsdir}.\n"
+                "Required GStreamer plugin '${_plugin}' was not found in ${_gst_inspection_pluginsdir}.\n"
                 "${_inspect_stdout}\n${_inspect_stderr}"
             )
         endif()
@@ -1176,10 +1556,18 @@ function(gcs_bootstrap_gstreamer)
         endif()
 
         gcs_gst_apply_root("${_system_root}")
-        set(GCS_GSTREAMER_SOURCE "system" CACHE INTERNAL "Resolved GStreamer SDK source.")
-        message(STATUS
-            "Using system GStreamer ${GCS_GSTREAMER_RESOLVED_VERSION} from ${GCS_GSTREAMER_ROOT}"
-        )
+        gcs_gst_homebrew_root_info("${_system_root}" _is_homebrew_system _homebrew_prefix)
+        if(_is_homebrew_system)
+            set(GCS_GSTREAMER_SOURCE "homebrew" CACHE INTERNAL "Resolved GStreamer SDK source.")
+            message(STATUS
+                "Using Homebrew GStreamer ${GCS_GSTREAMER_RESOLVED_VERSION} from ${GCS_GSTREAMER_ROOT}"
+            )
+        else()
+            set(GCS_GSTREAMER_SOURCE "system" CACHE INTERNAL "Resolved GStreamer SDK source.")
+            message(STATUS
+                "Using system GStreamer ${GCS_GSTREAMER_RESOLVED_VERSION} from ${GCS_GSTREAMER_ROOT}"
+            )
+        endif()
         return()
     endif()
 
@@ -1211,11 +1599,20 @@ function(gcs_bootstrap_gstreamer)
         endif()
         if(_auto_system_root)
             gcs_gst_apply_root("${_auto_system_root}")
-            set(GCS_GSTREAMER_SOURCE "system-auto" CACHE INTERNAL "Resolved GStreamer SDK source.")
-            message(STATUS
-                "Using auto-discovered system GStreamer ${GCS_GSTREAMER_RESOLVED_VERSION} "
-                "from ${GCS_GSTREAMER_ROOT}"
-            )
+            gcs_gst_homebrew_root_info("${_auto_system_root}" _is_homebrew_auto _homebrew_prefix)
+            if(_is_homebrew_auto)
+                set(GCS_GSTREAMER_SOURCE "homebrew-auto" CACHE INTERNAL "Resolved GStreamer SDK source.")
+                message(STATUS
+                    "Using auto-discovered Homebrew GStreamer ${GCS_GSTREAMER_RESOLVED_VERSION} "
+                    "from ${GCS_GSTREAMER_ROOT}"
+                )
+            else()
+                set(GCS_GSTREAMER_SOURCE "system-auto" CACHE INTERNAL "Resolved GStreamer SDK source.")
+                message(STATUS
+                    "Using auto-discovered system GStreamer ${GCS_GSTREAMER_RESOLVED_VERSION} "
+                    "from ${GCS_GSTREAMER_ROOT}"
+                )
+            endif()
             return()
         endif()
 
@@ -1235,6 +1632,7 @@ function(gcs_bootstrap_gstreamer)
 
     gcs_gst_root_complete("${_managed_root}" _managed_complete)
     if(_managed_complete AND NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
+        gcs_gst_disable_macos_python_plugin("${_managed_root}")
         gcs_gst_apply_root("${_managed_root}")
         set(GCS_GSTREAMER_SOURCE "managed" CACHE INTERNAL "Resolved GStreamer SDK source.")
         message(STATUS
