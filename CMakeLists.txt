@@ -13,9 +13,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH ON)
 set(GCS_GSTREAMER_MODE "AUTO" CACHE STRING "Controls video receiver support: AUTO, ON, or OFF.")
 set_property(CACHE GCS_GSTREAMER_MODE PROPERTY STRINGS AUTO ON OFF)
-set(GCS_GSTREAMER_ROOT "" CACHE PATH
-    "Optional GStreamer SDK/runtime root used to seed PATH and PKG_CONFIG_PATH."
-)
 
 set(GCS_CORE_INC_DIR "${PROJECT_SOURCE_DIR}/Core/Inc")
 set(GCS_CORE_SRC_DIR "${PROJECT_SOURCE_DIR}/Core/Src")
@@ -25,36 +22,10 @@ set(GCS_VIDEO_MODULE_SRC_DIR "${PROJECT_SOURCE_DIR}/Modules/Video/Src")
 include(cmake/BootstrapQt.cmake)
 include(cmake/BootstrapGStreamer.cmake)
 
-function(gcs_prepend_env_path env_name new_path)
-    if(NOT new_path OR NOT EXISTS "${new_path}")
-        return()
-    endif()
-
-    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
-        set(_path_separator ";")
-    else()
-        set(_path_separator ":")
-    endif()
-
-    set(_current_value "$ENV{${env_name}}")
-    if(_current_value)
-        set(ENV{${env_name}} "${new_path}${_path_separator}${_current_value}")
-    else()
-        set(ENV{${env_name}} "${new_path}")
-    endif()
-endfunction()
-
 string(TOUPPER "${GCS_GSTREAMER_MODE}" GCS_GSTREAMER_MODE)
 
 if(NOT GCS_GSTREAMER_MODE STREQUAL "OFF")
     gcs_bootstrap_gstreamer()
-endif()
-
-if(GCS_GSTREAMER_ROOT)
-    gcs_prepend_env_path(PATH "${GCS_GSTREAMER_ROOT}/bin")
-    gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib/pkgconfig")
-    gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib64/pkgconfig")
-    gcs_prepend_env_path(PKG_CONFIG_PATH "${GCS_GSTREAMER_ROOT}/lib/x86_64-linux-gnu/pkgconfig")
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
@@ -64,27 +35,45 @@ set(GCS_ENABLE_GSTREAMER OFF)
 
 if(GCS_GSTREAMER_MODE STREQUAL "OFF")
     message(STATUS "GStreamer receiver support is disabled by configuration")
-elseif(PkgConfig_FOUND)
+elseif(PkgConfig_FOUND AND GCS_GSTREAMER_ROOT)
     pkg_check_modules(GSTREAMER IMPORTED_TARGET QUIET
-        gstreamer-1.0
-        gstreamer-app-1.0
-        gstreamer-video-1.0
+        "gstreamer-1.0 = ${GCS_GSTREAMER_VERSION}"
+        "gstreamer-app-1.0 = ${GCS_GSTREAMER_VERSION}"
+        "gstreamer-video-1.0 = ${GCS_GSTREAMER_VERSION}"
     )
     if(TARGET PkgConfig::GSTREAMER)
+        gcs_verify_gstreamer_pkg_config_paths()
+        gcs_verify_gstreamer_plugins()
         set(GCS_ENABLE_GSTREAMER ON)
-        message(STATUS "GStreamer receiver support is enabled")
+        message(STATUS
+            "GStreamer receiver support is enabled with ${GCS_GSTREAMER_VERSION} "
+            "from ${GCS_GSTREAMER_ROOT}"
+        )
     elseif(GCS_GSTREAMER_MODE STREQUAL "ON")
         message(FATAL_ERROR
             "GStreamer receiver support was requested, but the required development files "
-            "were not found via pkg-config."
+            "for GStreamer ${GCS_GSTREAMER_VERSION} were not found under ${GCS_GSTREAMER_ROOT}."
         )
     else()
-        message(STATUS "GStreamer development files were not found, building without video receiver")
+        message(STATUS
+            "Managed GStreamer ${GCS_GSTREAMER_VERSION} development files were not found, "
+            "building without video receiver"
+        )
     endif()
 elseif(GCS_GSTREAMER_MODE STREQUAL "ON")
-    message(FATAL_ERROR "GStreamer receiver support was requested, but pkg-config is unavailable.")
+    if(NOT GCS_GSTREAMER_ROOT)
+        message(FATAL_ERROR
+            "GStreamer receiver support was requested, but no managed, external, or system "
+            "GStreamer root was selected."
+        )
+    else()
+        message(FATAL_ERROR "GStreamer receiver support was requested, but pkg-config is unavailable.")
+    endif()
 else()
-    message(STATUS "pkg-config is unavailable, building without video receiver")
+    message(STATUS
+        "No managed, external, or system GStreamer root was selected, "
+        "building without video receiver"
+    )
 endif()
 
 if(GCS_ENABLE_GSTREAMER)
@@ -133,6 +122,11 @@ if(GCS_ENABLE_GSTREAMER)
         PkgConfig::GSTREAMER
     )
     target_compile_definitions(GCS_player PRIVATE GCS_ENABLE_GSTREAMER=1)
+
+    if(NOT WIN32 AND GSTREAMER_LIBRARY_DIRS)
+        set_property(TARGET GCS_player APPEND PROPERTY BUILD_RPATH "${GSTREAMER_LIBRARY_DIRS}")
+        set_property(TARGET GCS_player APPEND PROPERTY INSTALL_RPATH "${GSTREAMER_LIBRARY_DIRS}")
+    endif()
 endif()
 
 set_target_properties(GCS_player PROPERTIES
@@ -226,8 +220,9 @@ if(GCS_ENABLE_GSTREAMER AND PkgConfig_FOUND)
         gcs_install_directory_if_exists("${GCS_GST_RUNTIME_DIR}" "gstreamer-runtime")
     else()
         message(STATUS
-            "GStreamer development files were found. On ${CMAKE_SYSTEM_NAME}, the build "
-            "uses the system GStreamer runtime instead of copying it next to the app."
+            "GStreamer development files were found under ${GCS_GSTREAMER_ROOT}. "
+            "On ${CMAKE_SYSTEM_NAME}, stale bundled GStreamer folders are removed so the "
+            "resolved SDK/runtime root is used consistently."
         )
         add_custom_command(TARGET GCS_player POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E rm -rf

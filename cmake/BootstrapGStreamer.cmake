@@ -1,12 +1,25 @@
 include_guard(GLOBAL)
 
 option(GCS_FETCH_GSTREAMER "Automatically download a GStreamer SDK when GStreamer support is required." ON)
-option(GCS_GSTREAMER_FORCE_DOWNLOAD "Ignore system GStreamer SDKs and use a project-local SDK." OFF)
+option(GCS_GSTREAMER_FORCE_DOWNLOAD "Refresh the managed GStreamer SDK; cannot be combined with external/system GStreamer." OFF)
+option(GCS_ALLOW_EXTERNAL_GSTREAMER "Allow an explicitly provided GStreamer SDK instead of the managed SDK." OFF)
+option(GCS_USE_SYSTEM_GSTREAMER "Allow GStreamer discovery from common system environment variables and PATH." OFF)
 option(GCS_GSTREAMER_REQUIRE_CHECKSUM "Fail if an auto-downloaded GStreamer package has no pinned checksum." OFF)
+option(GCS_VERIFY_GSTREAMER_PLUGINS "Verify required GStreamer plugins and their versions during configure." ON)
 
-set(GCS_GSTREAMER_VERSION "1.28.1" CACHE STRING "GStreamer SDK version used for automatic downloads.")
+set(GCS_GSTREAMER_VERSION "1.28.1" CACHE STRING
+    "GStreamer SDK version expected for the selected Qt version."
+)
 set(GCS_GSTREAMER_INSTALL_ROOT "${PROJECT_SOURCE_DIR}/External/GStreamer" CACHE PATH
-    "Root directory that stores auto-downloaded GStreamer SDKs."
+    "Root directory that stores managed GStreamer SDKs."
+)
+set(GCS_EXTERNAL_GSTREAMER_ROOT "" CACHE PATH
+    "Explicit GStreamer SDK/runtime root used only when GCS_ALLOW_EXTERNAL_GSTREAMER=ON."
+)
+set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root.")
+set(GCS_REQUIRED_GSTREAMER_PLUGINS
+    "coreelements;app;udp;rtpmanager;rtp;videoparsersbad;playback;videoconvertscale;libav"
+    CACHE STRING "GStreamer plugin names required by the video receiver."
 )
 
 set(_GCS_GSTREAMER_SHA256_WINDOWS_MSVC_X86_64_1_28_1
@@ -22,30 +35,45 @@ set(_GCS_GSTREAMER_SHA256_MACOS_DEVEL_1_28_1
     "df167b41559afbcd743276c6b068cba2ada8f5b69eb68095415a7a5a7515e52c"
 )
 
-function(gcs_gst_env_prepend env_name new_path)
-    if(NOT new_path OR NOT EXISTS "${new_path}")
-        return()
-    endif()
-
-    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
-        set(_separator ";")
-    else()
-        set(_separator ":")
-    endif()
-
-    set(_current "$ENV{${env_name}}")
-    if(_current)
-        set(ENV{${env_name}} "${new_path}${_separator}${_current}")
-    else()
-        set(ENV{${env_name}} "${new_path}")
-    endif()
-endfunction()
-
 function(gcs_gst_to_key input output_var)
     string(TOUPPER "${input}" _key)
     string(REPLACE "." "_" _key "${_key}")
     string(REPLACE "-" "_" _key "${_key}")
     set(${output_var} "${_key}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_expected_version_for_qt qt_version output_var)
+    if(NOT qt_version)
+        message(FATAL_ERROR "GCS_QT_VERSION must be set before resolving GStreamer compatibility.")
+    endif()
+
+    if(qt_version VERSION_GREATER_EQUAL "6.10.0" AND qt_version VERSION_LESS "6.11.0")
+        set(${output_var} "1.28.1" PARENT_SCOPE)
+    else()
+        message(FATAL_ERROR
+            "No verified GStreamer compatibility mapping is defined for Qt ${qt_version}. "
+            "Add the Qt/GStreamer pair to cmake/BootstrapGStreamer.cmake before enabling GStreamer."
+        )
+    endif()
+endfunction()
+
+function(gcs_gst_resolve_version_for_qt)
+    gcs_gst_expected_version_for_qt("${GCS_QT_VERSION}" _expected_gst_version)
+
+    if(GCS_GSTREAMER_VERSION AND NOT "${GCS_GSTREAMER_VERSION}" STREQUAL "${_expected_gst_version}")
+        message(FATAL_ERROR
+            "GStreamer version mismatch for Qt ${GCS_QT_VERSION}.\n"
+            "Expected GStreamer: ${_expected_gst_version}\n"
+            "Configured GStreamer: ${GCS_GSTREAMER_VERSION}"
+        )
+    endif()
+
+    set(GCS_GSTREAMER_VERSION "${_expected_gst_version}" CACHE STRING
+        "GStreamer SDK version expected for the selected Qt version." FORCE
+    )
+    set(GCS_QT_COMPATIBLE_GSTREAMER_VERSION "${_expected_gst_version}" CACHE INTERNAL
+        "GStreamer version verified for the selected Qt version."
+    )
 endfunction()
 
 function(gcs_gst_get_checksum platform version output_var)
@@ -124,23 +152,291 @@ function(gcs_gst_download url destination_file expected_hash)
     file(RENAME "${_temporary_file}" "${destination_file}")
 endfunction()
 
-function(gcs_gst_windows_sdk_complete root_dir output_var)
-    set(_required_paths
-        "bin/pkg-config.exe"
-        "include/gstreamer-1.0"
-        "lib/gstreamer-1.0"
-        "lib/pkgconfig/gstreamer-1.0.pc"
-    )
+function(gcs_gst_get_windows_arch output_arch output_checksum_platform)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+        set(${output_arch} "arm64" PARENT_SCOPE)
+        set(${output_checksum_platform} "WINDOWS_MSVC_ARM64" PARENT_SCOPE)
+    else()
+        set(${output_arch} "x86_64" PARENT_SCOPE)
+        set(${output_checksum_platform} "WINDOWS_MSVC_X86_64" PARENT_SCOPE)
+    endif()
+endfunction()
 
-    set(_is_complete TRUE)
-    foreach(_path IN LISTS _required_paths)
-        if(NOT EXISTS "${root_dir}/${_path}")
-            set(_is_complete FALSE)
+function(gcs_gst_get_managed_root output_var)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        gcs_gst_get_windows_arch(_gst_arch _checksum_platform)
+        set(_root "${GCS_GSTREAMER_INSTALL_ROOT}/windows-msvc-${_gst_arch}-${GCS_GSTREAMER_VERSION}/sdk")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        set(_root "${GCS_GSTREAMER_INSTALL_ROOT}/macos-${GCS_GSTREAMER_VERSION}/root")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _linux_arch)
+        if(NOT _linux_arch)
+            set(_linux_arch "unknown")
+        endif()
+        set(_root "${GCS_GSTREAMER_INSTALL_ROOT}/linux-${_linux_arch}-${GCS_GSTREAMER_VERSION}")
+    else()
+        set(_root "")
+    endif()
+
+    set(${output_var} "${_root}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_read_pc_version root_dir output_var)
+    set(_pc_version "")
+    gcs_gst_pkgconfig_dirs("${root_dir}" _pkgconfig_dirs)
+    foreach(_pkgconfig_dir IN LISTS _pkgconfig_dirs)
+        set(_pc_file "${_pkgconfig_dir}/gstreamer-1.0.pc")
+        if(EXISTS "${_pc_file}")
+            file(STRINGS "${_pc_file}" _version_lines REGEX "^Version:")
+            foreach(_line IN LISTS _version_lines)
+                if(_line MATCHES "^Version:[ \t]*([0-9]+\\.[0-9]+\\.[0-9]+)")
+                    set(_pc_version "${CMAKE_MATCH_1}")
+                    break()
+                endif()
+            endforeach()
+        endif()
+
+        if(_pc_version)
             break()
         endif()
     endforeach()
 
+    set(${output_var} "${_pc_version}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_pkgconfig_dirs root_dir output_var)
+    set(_candidate_dirs
+        "${root_dir}/lib/pkgconfig"
+        "${root_dir}/lib/gstreamer-1.0/pkgconfig"
+        "${root_dir}/lib64/pkgconfig"
+        "${root_dir}/share/pkgconfig"
+    )
+
+    if(CMAKE_LIBRARY_ARCHITECTURE)
+        list(APPEND _candidate_dirs "${root_dir}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/pkgconfig")
+    endif()
+
+    list(APPEND _candidate_dirs
+        "${root_dir}/lib/x86_64-linux-gnu/pkgconfig"
+        "${root_dir}/lib/aarch64-linux-gnu/pkgconfig"
+        "${root_dir}/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/pkgconfig"
+    )
+
+    set(_existing_dirs)
+    foreach(_dir IN LISTS _candidate_dirs)
+        if(EXISTS "${_dir}")
+            list(APPEND _existing_dirs "${_dir}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _existing_dirs)
+
+    set(${output_var} "${_existing_dirs}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_plugin_dirs root_dir output_var)
+    set(_candidate_dirs
+        "${root_dir}/lib/gstreamer-1.0"
+        "${root_dir}/lib64/gstreamer-1.0"
+    )
+
+    if(CMAKE_LIBRARY_ARCHITECTURE)
+        list(APPEND _candidate_dirs "${root_dir}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/gstreamer-1.0")
+    endif()
+
+    list(APPEND _candidate_dirs
+        "${root_dir}/lib/x86_64-linux-gnu/gstreamer-1.0"
+        "${root_dir}/lib/aarch64-linux-gnu/gstreamer-1.0"
+        "${root_dir}/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/gstreamer-1.0"
+    )
+
+    set(_existing_dirs)
+    foreach(_dir IN LISTS _candidate_dirs)
+        if(EXISTS "${_dir}")
+            list(APPEND _existing_dirs "${_dir}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _existing_dirs)
+
+    set(${output_var} "${_existing_dirs}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_join_paths output_var)
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+        set(_separator ";")
+    else()
+        set(_separator ":")
+    endif()
+
+    set(_joined "")
+    foreach(_path IN LISTS ARGN)
+        if(NOT _path)
+            continue()
+        endif()
+
+        if(_joined)
+            string(APPEND _joined "${_separator}${_path}")
+        else()
+            set(_joined "${_path}")
+        endif()
+    endforeach()
+
+    set(${output_var} "${_joined}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_root_complete root_dir output_var)
+    set(_is_complete TRUE)
+
+    if(NOT root_dir OR NOT EXISTS "${root_dir}")
+        set(_is_complete FALSE)
+    endif()
+
+    if(_is_complete AND NOT EXISTS "${root_dir}/include/gstreamer-1.0")
+        set(_is_complete FALSE)
+    endif()
+
+    if(_is_complete)
+        gcs_gst_pkgconfig_dirs("${root_dir}" _pkgconfig_dirs)
+        set(_has_gstreamer_pc FALSE)
+        foreach(_pkgconfig_dir IN LISTS _pkgconfig_dirs)
+            if(EXISTS "${_pkgconfig_dir}/gstreamer-1.0.pc")
+                set(_has_gstreamer_pc TRUE)
+                break()
+            endif()
+        endforeach()
+        if(NOT _has_gstreamer_pc)
+            set(_is_complete FALSE)
+        endif()
+    endif()
+
+    if(_is_complete)
+        gcs_gst_plugin_dirs("${root_dir}" _plugin_dirs)
+        if(NOT _plugin_dirs)
+            set(_is_complete FALSE)
+        endif()
+    endif()
+
+    if(_is_complete AND CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        if(NOT EXISTS "${root_dir}/bin/pkg-config.exe")
+            set(_is_complete FALSE)
+        endif()
+    endif()
+
+    if(_is_complete AND GCS_VERIFY_GSTREAMER_PLUGINS)
+        if(WIN32)
+            set(_gst_inspect_name "gst-inspect-1.0.exe")
+        else()
+            set(_gst_inspect_name "gst-inspect-1.0")
+        endif()
+
+        if(NOT EXISTS "${root_dir}/bin/${_gst_inspect_name}")
+            set(_is_complete FALSE)
+        endif()
+    endif()
+
     set(${output_var} "${_is_complete}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_add_env_candidate candidate output_var)
+    set(_candidates ${${output_var}})
+    if(candidate)
+        list(APPEND _candidates "${candidate}")
+        list(REMOVE_DUPLICATES _candidates)
+    endif()
+    set(${output_var} "${_candidates}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_collect_system_candidates output_var)
+    set(_candidates)
+
+    foreach(_env_name IN ITEMS
+        GSTREAMER_ROOT
+        GSTREAMER_1_0_ROOT
+        GSTREAMER_SDK_ROOT
+        GSTREAMER_1_0_ROOT_X86_64
+        GSTREAMER_1_0_ROOT_MSVC_X86_64
+        GSTREAMER_1_0_ROOT_ARM64
+        GSTREAMER_1_0_ROOT_MSVC_ARM64
+    )
+        if(DEFINED ENV{${_env_name}} AND NOT "$ENV{${_env_name}}" STREQUAL "")
+            gcs_gst_add_env_candidate("$ENV{${_env_name}}" _candidates)
+        endif()
+    endforeach()
+
+    find_program(_system_gst_inspect NAMES gst-inspect-1.0 gst-inspect-1.0.exe)
+    if(_system_gst_inspect)
+        get_filename_component(_system_gst_bin_dir "${_system_gst_inspect}" DIRECTORY)
+        get_filename_component(_system_gst_root "${_system_gst_bin_dir}" DIRECTORY)
+        gcs_gst_add_env_candidate("${_system_gst_root}" _candidates)
+    endif()
+
+    find_program(_system_pkg_config NAMES pkg-config pkgconf pkg-config.exe pkgconf.exe)
+    if(_system_pkg_config)
+        execute_process(
+            COMMAND "${_system_pkg_config}" --variable=prefix gstreamer-1.0
+            RESULT_VARIABLE _pkg_prefix_result
+            OUTPUT_VARIABLE _pkg_prefix
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_pkg_prefix_result EQUAL 0 AND _pkg_prefix)
+            gcs_gst_add_env_candidate("${_pkg_prefix}" _candidates)
+        endif()
+    endif()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+            gcs_gst_add_env_candidate("C:/Program Files/gstreamer/1.0/msvc_arm64" _candidates)
+            gcs_gst_add_env_candidate("C:/gstreamer/1.0/msvc_arm64" _candidates)
+        else()
+            gcs_gst_add_env_candidate("C:/Program Files/gstreamer/1.0/msvc_x86_64" _candidates)
+            gcs_gst_add_env_candidate("C:/gstreamer/1.0/msvc_x86_64" _candidates)
+        endif()
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        gcs_gst_add_env_candidate("/Library/Frameworks/GStreamer.framework/Versions/1.0" _candidates)
+        gcs_gst_add_env_candidate("/opt/homebrew/opt/gstreamer" _candidates)
+        gcs_gst_add_env_candidate("/usr/local/opt/gstreamer" _candidates)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        gcs_gst_add_env_candidate("/usr/local" _candidates)
+        gcs_gst_add_env_candidate("/usr" _candidates)
+    endif()
+
+    set(${output_var} "${_candidates}" PARENT_SCOPE)
+endfunction()
+
+function(gcs_gst_find_system_root output_var)
+    gcs_gst_collect_system_candidates(_candidates)
+    set(_wrong_version_messages)
+    set(_incomplete_messages)
+
+    foreach(_candidate IN LISTS _candidates)
+        if(NOT _candidate OR NOT EXISTS "${_candidate}")
+            continue()
+        endif()
+
+        get_filename_component(_candidate_root "${_candidate}" ABSOLUTE)
+        gcs_gst_root_complete("${_candidate_root}" _candidate_complete)
+        if(NOT _candidate_complete)
+            list(APPEND _incomplete_messages "${_candidate_root}")
+            continue()
+        endif()
+
+        gcs_gst_read_pc_version("${_candidate_root}" _candidate_version)
+        if(NOT "${_candidate_version}" STREQUAL "${GCS_GSTREAMER_VERSION}")
+            list(APPEND _wrong_version_messages "${_candidate_root}: ${_candidate_version}")
+            continue()
+        endif()
+
+        set(${output_var} "${_candidate_root}" PARENT_SCOPE)
+        return()
+    endforeach()
+
+    message(FATAL_ERROR
+        "GCS_USE_SYSTEM_GSTREAMER=ON, but no complete system GStreamer "
+        "${GCS_GSTREAMER_VERSION} SDK was found via GSTREAMER_* env vars, PATH, "
+        "pkg-config, or standard OS install locations.\n"
+        "Incomplete candidates: ${_incomplete_messages}\n"
+        "Wrong-version candidates: ${_wrong_version_messages}"
+    )
 endfunction()
 
 function(gcs_gst_find_windows_sdk_root extracted_dir output_var)
@@ -161,13 +457,7 @@ function(gcs_gst_find_windows_sdk_root extracted_dir output_var)
 endfunction()
 
 function(gcs_gst_download_windows_sdk output_root_var)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
-        set(_gst_arch "arm64")
-        set(_checksum_platform "WINDOWS_MSVC_ARM64")
-    else()
-        set(_gst_arch "x86_64")
-        set(_checksum_platform "WINDOWS_MSVC_X86_64")
-    endif()
+    gcs_gst_get_windows_arch(_gst_arch _checksum_platform)
 
     if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(FATAL_ERROR
@@ -178,7 +468,7 @@ function(gcs_gst_download_windows_sdk output_root_var)
     if(GCS_GSTREAMER_VERSION VERSION_LESS "1.28.0")
         message(FATAL_ERROR
             "Automatic Windows GStreamer download expects the unified 1.28+ installer. "
-            "Set GCS_GSTREAMER_VERSION to 1.28.1 or provide GCS_GSTREAMER_ROOT manually."
+            "Set GCS_GSTREAMER_VERSION to 1.28.1 or provide GCS_EXTERNAL_GSTREAMER_ROOT manually."
         )
     endif()
 
@@ -195,7 +485,7 @@ function(gcs_gst_download_windows_sdk output_root_var)
     gcs_gst_download("${_url}" "${_installer}" "${_expected_hash}")
 
     gcs_gst_find_windows_sdk_root("${_sdk_dir}" _sdk_root)
-    if(NOT _sdk_root)
+    if(NOT _sdk_root OR GCS_GSTREAMER_FORCE_DOWNLOAD)
         file(REMOVE_RECURSE "${_sdk_dir}")
         file(MAKE_DIRECTORY "${_sdk_dir}")
 
@@ -214,19 +504,25 @@ function(gcs_gst_download_windows_sdk output_root_var)
             ERROR_VARIABLE _installer_stderr
             TIMEOUT 900
         )
-        if(NOT _installer_result EQUAL 0)
+        gcs_gst_find_windows_sdk_root("${_sdk_dir}" _sdk_root)
+        gcs_gst_root_complete("${_sdk_root}" _sdk_complete_after_installer)
+        if(NOT _installer_result EQUAL 0 AND NOT _sdk_complete_after_installer)
             file(REMOVE_RECURSE "${_sdk_dir}")
             message(FATAL_ERROR
                 "GStreamer installer failed with exit code ${_installer_result}.\n"
                 "stderr: ${_installer_stderr}\n"
                 "Installer log: ${_installer_log}"
             )
+        elseif(NOT _installer_result EQUAL 0)
+            message(WARNING
+                "GStreamer installer returned exit code ${_installer_result}, but the SDK "
+                "contents verified successfully. Continuing.\n"
+                "Installer log: ${_installer_log}"
+            )
         endif()
-
-        gcs_gst_find_windows_sdk_root("${_sdk_dir}" _sdk_root)
     endif()
 
-    gcs_gst_windows_sdk_complete("${_sdk_root}" _sdk_complete)
+    gcs_gst_root_complete("${_sdk_root}" _sdk_complete)
     if(NOT _sdk_root OR NOT _sdk_complete)
         file(REMOVE_RECURSE "${_sdk_dir}")
         message(FATAL_ERROR
@@ -267,10 +563,8 @@ function(gcs_gst_download_macos_sdk output_root_var)
     gcs_gst_download("${_runtime_url}" "${_runtime_pkg}" "${_runtime_hash}")
     gcs_gst_download("${_devel_url}" "${_devel_pkg}" "${_devel_hash}")
 
-    if(EXISTS "${_sdk_root}/.merge_complete"
-       AND EXISTS "${_sdk_root}/lib/gstreamer-1.0"
-       AND EXISTS "${_sdk_root}/include/gstreamer-1.0"
-       AND EXISTS "${_sdk_root}/lib/pkgconfig/gstreamer-1.0.pc")
+    gcs_gst_root_complete("${_sdk_root}" _sdk_complete)
+    if(_sdk_complete AND EXISTS "${_sdk_root}/.merge_complete" AND NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
         set(${output_root_var} "${_sdk_root}" PARENT_SCOPE)
         return()
     endif()
@@ -315,9 +609,8 @@ function(gcs_gst_download_macos_sdk output_root_var)
     endforeach()
     file(TOUCH "${_sdk_root}/.merge_complete")
 
-    if(NOT EXISTS "${_sdk_root}/lib/gstreamer-1.0"
-       OR NOT EXISTS "${_sdk_root}/include/gstreamer-1.0"
-       OR NOT EXISTS "${_sdk_root}/lib/pkgconfig/gstreamer-1.0.pc")
+    gcs_gst_root_complete("${_sdk_root}" _sdk_complete)
+    if(NOT _sdk_complete)
         file(REMOVE_RECURSE "${_sdk_root}")
         message(FATAL_ERROR "Downloaded macOS GStreamer SDK is incomplete.")
     endif()
@@ -327,116 +620,300 @@ endfunction()
 
 function(gcs_gst_apply_root root_dir)
     if(NOT root_dir OR NOT EXISTS "${root_dir}")
-        return()
+        message(FATAL_ERROR "GStreamer root does not exist: ${root_dir}")
     endif()
 
-    set(GCS_GSTREAMER_ROOT "${root_dir}" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
-    gcs_gst_env_prepend(PATH "${root_dir}/bin")
+    get_filename_component(_root_dir "${root_dir}" ABSOLUTE)
+    gcs_gst_root_complete("${_root_dir}" _root_complete)
+    if(NOT _root_complete)
+        message(FATAL_ERROR
+            "GStreamer root is incomplete: ${_root_dir}\n"
+            "Expected include/gstreamer-1.0, a gstreamer-1.0.pc file, and plugin directories."
+        )
+    endif()
+
+    set(GCS_GSTREAMER_ROOT "${_root_dir}" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
+
+    gcs_gst_pkgconfig_dirs("${_root_dir}" _pkgconfig_dirs)
+    gcs_gst_join_paths(_pkg_config_libdir ${_pkgconfig_dirs})
+    set(ENV{PKG_CONFIG_LIBDIR} "${_pkg_config_libdir}")
+    set(ENV{PKG_CONFIG_PATH} "")
+    set(ENV{PKG_CONFIG_DONT_DEFINE_PREFIX} "1")
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        set(_pkg_config_exe "${root_dir}/bin/pkg-config.exe")
+        set(_pkg_config_exe "${_root_dir}/bin/pkg-config.exe")
         if(EXISTS "${_pkg_config_exe}")
             set(ENV{PKG_CONFIG} "${_pkg_config_exe}")
             set(PKG_CONFIG_EXECUTABLE "${_pkg_config_exe}" CACHE FILEPATH "pkg-config executable" FORCE)
             set(_pkg_config_args
                 "--dont-define-prefix"
-                "--define-variable=prefix=${root_dir}"
-                "--define-variable=libdir=${root_dir}/lib"
-                "--define-variable=includedir=${root_dir}/include"
+                "--define-variable=prefix=${_root_dir}"
+                "--define-variable=libdir=${_root_dir}/lib"
+                "--define-variable=includedir=${_root_dir}/include"
             )
             set(PKG_CONFIG_ARGN "${_pkg_config_args}" CACHE STRING "Extra arguments for pkg-config" FORCE)
         endif()
-        set(ENV{PKG_CONFIG_DONT_DEFINE_PREFIX} "1")
-        set(ENV{PKG_CONFIG_LIBDIR} "${root_dir}/lib/pkgconfig;${root_dir}/lib/gstreamer-1.0/pkgconfig")
-        set(ENV{PKG_CONFIG_PATH} "")
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        if(EXISTS "${root_dir}/bin/pkg-config")
-            set(ENV{PKG_CONFIG} "${root_dir}/bin/pkg-config")
-            set(PKG_CONFIG_EXECUTABLE "${root_dir}/bin/pkg-config" CACHE FILEPATH "pkg-config executable" FORCE)
-        endif()
-        set(ENV{PKG_CONFIG_LIBDIR} "${root_dir}/lib/pkgconfig:${root_dir}/lib/gstreamer-1.0/pkgconfig")
-    else()
-        gcs_gst_env_prepend(PKG_CONFIG_PATH "${root_dir}/lib/pkgconfig")
-        gcs_gst_env_prepend(PKG_CONFIG_PATH "${root_dir}/lib64/pkgconfig")
-        gcs_gst_env_prepend(PKG_CONFIG_PATH "${root_dir}/lib/x86_64-linux-gnu/pkgconfig")
-        gcs_gst_env_prepend(PKG_CONFIG_PATH "${root_dir}/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/pkgconfig")
+    elseif(EXISTS "${_root_dir}/bin/pkg-config")
+        set(ENV{PKG_CONFIG} "${_root_dir}/bin/pkg-config")
+        set(PKG_CONFIG_EXECUTABLE "${_root_dir}/bin/pkg-config" CACHE FILEPATH "pkg-config executable" FORCE)
     endif()
+endfunction()
+
+function(gcs_gst_path_must_be_under_root path root_dir label)
+    if(NOT path OR NOT EXISTS "${path}")
+        return()
+    endif()
+
+    file(REAL_PATH "${path}" _path_real)
+    file(REAL_PATH "${root_dir}" _root_real)
+    file(TO_CMAKE_PATH "${_path_real}" _path_real)
+    file(TO_CMAKE_PATH "${_root_real}" _root_real)
+
+    string(APPEND _path_real "/")
+    string(APPEND _root_real "/")
+    string(FIND "${_path_real}" "${_root_real}" _root_pos)
+    if(NOT _root_pos EQUAL 0)
+        message(FATAL_ERROR
+            "${label} resolves outside the selected GStreamer root.\n"
+            "GStreamer root: ${root_dir}\n"
+            "${label}: ${path}"
+        )
+    endif()
+endfunction()
+
+function(gcs_verify_gstreamer_pkg_config_paths)
+    if(NOT GCS_GSTREAMER_ROOT)
+        message(FATAL_ERROR "GCS_GSTREAMER_ROOT is empty; refusing to query system GStreamer.")
+    endif()
+
+    pkg_get_variable(_gst_prefix gstreamer-1.0 prefix)
+    pkg_get_variable(_gst_pluginsdir gstreamer-1.0 pluginsdir)
+    pkg_get_variable(_gst_pluginscannerdir gstreamer-1.0 pluginscannerdir)
+    pkg_get_variable(_gst_toolsdir gstreamer-1.0 toolsdir)
+    pkg_get_variable(_gst_giomoduledir gio-2.0 giomoduledir)
+
+    if(_gst_prefix)
+        gcs_gst_path_must_be_under_root("${_gst_prefix}" "${GCS_GSTREAMER_ROOT}" "GStreamer prefix")
+    endif()
+    if(_gst_pluginsdir)
+        gcs_gst_path_must_be_under_root("${_gst_pluginsdir}" "${GCS_GSTREAMER_ROOT}" "GStreamer pluginsdir")
+    endif()
+    if(_gst_pluginscannerdir)
+        gcs_gst_path_must_be_under_root("${_gst_pluginscannerdir}" "${GCS_GSTREAMER_ROOT}" "GStreamer pluginscannerdir")
+    endif()
+    if(_gst_toolsdir)
+        gcs_gst_path_must_be_under_root("${_gst_toolsdir}" "${GCS_GSTREAMER_ROOT}" "GStreamer toolsdir")
+    endif()
+    if(_gst_giomoduledir)
+        gcs_gst_path_must_be_under_root("${_gst_giomoduledir}" "${GCS_GSTREAMER_ROOT}" "GIO module dir")
+    endif()
+endfunction()
+
+function(gcs_verify_gstreamer_plugins)
+    if(NOT GCS_VERIFY_GSTREAMER_PLUGINS)
+        return()
+    endif()
+
+    if(NOT GCS_GSTREAMER_ROOT)
+        message(FATAL_ERROR "Cannot verify GStreamer plugins without GCS_GSTREAMER_ROOT.")
+    endif()
+
+    pkg_get_variable(_gst_pluginsdir gstreamer-1.0 pluginsdir)
+    pkg_get_variable(_gst_pluginscannerdir gstreamer-1.0 pluginscannerdir)
+
+    find_program(_gst_inspect
+        NAMES gst-inspect-1.0 gst-inspect-1.0.exe
+        HINTS "${GCS_GSTREAMER_ROOT}/bin"
+        NO_DEFAULT_PATH
+    )
+    if(NOT _gst_inspect)
+        message(FATAL_ERROR
+            "gst-inspect-1.0 was not found under ${GCS_GSTREAMER_ROOT}/bin. "
+            "Cannot verify GStreamer plugin versions."
+        )
+    endif()
+
+    if(WIN32)
+        set(_scanner_name "gst-plugin-scanner.exe")
+    else()
+        set(_scanner_name "gst-plugin-scanner")
+    endif()
+
+    set(_inspect_env
+        "GST_PLUGIN_PATH=${_gst_pluginsdir}"
+        "GST_PLUGIN_PATH_1_0=${_gst_pluginsdir}"
+        "GST_PLUGIN_SYSTEM_PATH=${_gst_pluginsdir}"
+        "GST_PLUGIN_SYSTEM_PATH_1_0=${_gst_pluginsdir}"
+        "GST_REGISTRY=${CMAKE_BINARY_DIR}/gstreamer-registry-${GCS_GSTREAMER_VERSION}.bin"
+        "GST_REGISTRY_FORK=no"
+        "GST_REGISTRY_REUSE_PLUGIN_SCANNER=no"
+    )
+
+    if(_gst_pluginscannerdir AND EXISTS "${_gst_pluginscannerdir}/${_scanner_name}")
+        list(APPEND _inspect_env
+            "GST_PLUGIN_SCANNER=${_gst_pluginscannerdir}/${_scanner_name}"
+            "GST_PLUGIN_SCANNER_1_0=${_gst_pluginscannerdir}/${_scanner_name}"
+        )
+    endif()
+
+    foreach(_plugin IN LISTS GCS_REQUIRED_GSTREAMER_PLUGINS)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env ${_inspect_env}
+                "${_gst_inspect}" "--plugin" "${_plugin}"
+            RESULT_VARIABLE _inspect_result
+            OUTPUT_VARIABLE _inspect_stdout
+            ERROR_VARIABLE _inspect_stderr
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_STRIP_TRAILING_WHITESPACE
+        )
+        if(NOT _inspect_result EQUAL 0)
+            message(FATAL_ERROR
+                "Required GStreamer plugin '${_plugin}' was not found in ${_gst_pluginsdir}.\n"
+                "${_inspect_stdout}\n${_inspect_stderr}"
+            )
+        endif()
+
+        if(NOT _inspect_stdout MATCHES "Version[ \t]+([0-9]+\\.[0-9]+\\.[0-9]+)")
+            message(FATAL_ERROR
+                "Could not read the version for GStreamer plugin '${_plugin}'.\n"
+                "${_inspect_stdout}"
+            )
+        endif()
+
+        set(_plugin_version "${CMAKE_MATCH_1}")
+        if(NOT "${_plugin_version}" STREQUAL "${GCS_GSTREAMER_VERSION}")
+            message(FATAL_ERROR
+                "GStreamer plugin '${_plugin}' has an incompatible version.\n"
+                "Expected: ${GCS_GSTREAMER_VERSION} for Qt ${GCS_QT_VERSION}\n"
+                "Found:    ${_plugin_version}\n"
+                "Plugin source: ${_gst_pluginsdir}"
+            )
+        endif()
+    endforeach()
+
+    message(STATUS
+        "Verified GStreamer ${GCS_GSTREAMER_VERSION} plugins for Qt ${GCS_QT_VERSION}: "
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+    )
 endfunction()
 
 function(gcs_bootstrap_gstreamer)
     if(GCS_GSTREAMER_MODE STREQUAL "OFF")
+        set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
         return()
     endif()
+
+    gcs_gst_resolve_version_for_qt()
 
     set(_is_required FALSE)
     if(GCS_GSTREAMER_MODE STREQUAL "ON")
         set(_is_required TRUE)
     endif()
 
-    if(GCS_GSTREAMER_ROOT AND EXISTS "${GCS_GSTREAMER_ROOT}" AND NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
-        gcs_gst_apply_root("${GCS_GSTREAMER_ROOT}")
+    if(GCS_GSTREAMER_FORCE_DOWNLOAD AND (GCS_ALLOW_EXTERNAL_GSTREAMER OR GCS_USE_SYSTEM_GSTREAMER))
+        message(FATAL_ERROR
+            "GCS_GSTREAMER_FORCE_DOWNLOAD refreshes only the managed GStreamer SDK. "
+            "Do not combine it with GCS_ALLOW_EXTERNAL_GSTREAMER or GCS_USE_SYSTEM_GSTREAMER."
+        )
+    endif()
+
+    if(GCS_ALLOW_EXTERNAL_GSTREAMER AND GCS_USE_SYSTEM_GSTREAMER)
+        message(FATAL_ERROR
+            "Choose one GStreamer source: explicit GCS_EXTERNAL_GSTREAMER_ROOT/GCS_GSTREAMER_ROOT "
+            "or GCS_USE_SYSTEM_GSTREAMER."
+        )
+    endif()
+
+    if(GCS_ALLOW_EXTERNAL_GSTREAMER)
+        if(GCS_EXTERNAL_GSTREAMER_ROOT)
+            set(_external_root "${GCS_EXTERNAL_GSTREAMER_ROOT}")
+        elseif(GCS_GSTREAMER_ROOT)
+            set(_external_root "${GCS_GSTREAMER_ROOT}")
+        else()
+            message(FATAL_ERROR
+                "GCS_ALLOW_EXTERNAL_GSTREAMER=ON requires GCS_EXTERNAL_GSTREAMER_ROOT "
+                "or GCS_GSTREAMER_ROOT to be set."
+            )
+        endif()
+
+        gcs_gst_apply_root("${_external_root}")
+        set(GCS_GSTREAMER_SOURCE "external" CACHE INTERNAL "Resolved GStreamer SDK source.")
+        message(STATUS
+            "Using explicitly provided GStreamer ${GCS_GSTREAMER_VERSION} from ${GCS_GSTREAMER_ROOT}"
+        )
         return()
     endif()
 
-    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        if(NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
-            if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
-                set(_candidates
-                    "$ENV{GSTREAMER_1_0_ROOT_ARM64}"
-                    "$ENV{GSTREAMER_1_0_ROOT_MSVC_ARM64}"
-                    "C:/Program Files/gstreamer/1.0/msvc_arm64"
-                    "C:/gstreamer/1.0/msvc_arm64"
-                )
-            else()
-                set(_candidates
-                    "$ENV{GSTREAMER_1_0_ROOT_X86_64}"
-                    "$ENV{GSTREAMER_1_0_ROOT_MSVC_X86_64}"
-                    "C:/Program Files/gstreamer/1.0/msvc_x86_64"
-                    "C:/gstreamer/1.0/msvc_x86_64"
-                )
-            endif()
+    if(GCS_USE_SYSTEM_GSTREAMER)
+        gcs_gst_find_system_root(_system_root)
+        gcs_gst_apply_root("${_system_root}")
+        set(GCS_GSTREAMER_SOURCE "system" CACHE INTERNAL "Resolved GStreamer SDK source.")
+        message(STATUS
+            "Using system GStreamer ${GCS_GSTREAMER_VERSION} from ${GCS_GSTREAMER_ROOT}"
+        )
+        return()
+    endif()
 
-            foreach(_candidate IN LISTS _candidates)
-                if(_candidate AND EXISTS "${_candidate}")
-                    gcs_gst_windows_sdk_complete("${_candidate}" _candidate_complete)
-                    if(_candidate_complete)
-                        gcs_gst_apply_root("${_candidate}")
-                        return()
-                    elseif(_is_required)
-                        message(STATUS
-                            "Existing GStreamer at ${_candidate} is incomplete; downloading a project-local SDK."
-                        )
-                    endif()
-                endif()
-            endforeach()
-        endif()
+    if(GCS_EXTERNAL_GSTREAMER_ROOT)
+        message(FATAL_ERROR
+            "GCS_EXTERNAL_GSTREAMER_ROOT was provided, but external GStreamer SDKs are disabled. "
+            "Set GCS_ALLOW_EXTERNAL_GSTREAMER=ON to use that path."
+        )
+    endif()
 
-        if(GCS_FETCH_GSTREAMER AND _is_required)
+    gcs_gst_get_managed_root(_managed_root)
+    if(NOT _managed_root)
+        message(FATAL_ERROR "Managed GStreamer SDKs are not configured for ${CMAKE_SYSTEM_NAME}.")
+    endif()
+
+    if(GCS_GSTREAMER_ROOT AND NOT "${GCS_GSTREAMER_ROOT}" STREQUAL "${_managed_root}")
+        message(STATUS
+            "Ignoring cached GCS_GSTREAMER_ROOT=${GCS_GSTREAMER_ROOT} because "
+            "GCS_ALLOW_EXTERNAL_GSTREAMER=OFF; managed root is ${_managed_root}."
+        )
+        set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
+    endif()
+
+    gcs_gst_root_complete("${_managed_root}" _managed_complete)
+    if(_managed_complete AND NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
+        gcs_gst_apply_root("${_managed_root}")
+        set(GCS_GSTREAMER_SOURCE "managed" CACHE INTERNAL "Resolved GStreamer SDK source.")
+        message(STATUS "Using managed GStreamer ${GCS_GSTREAMER_VERSION} from ${GCS_GSTREAMER_ROOT}")
+        return()
+    endif()
+
+    if(_is_required AND GCS_FETCH_GSTREAMER)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
             gcs_gst_download_windows_sdk(_downloaded_root)
             gcs_gst_apply_root("${_downloaded_root}")
-        endif()
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        if(NOT GCS_GSTREAMER_FORCE_DOWNLOAD)
-            foreach(_candidate IN ITEMS
-                "/Library/Frameworks/GStreamer.framework/Versions/1.0"
-                "/opt/homebrew/opt/gstreamer"
-                "/usr/local/opt/gstreamer"
-            )
-                if(EXISTS "${_candidate}/lib/pkgconfig/gstreamer-1.0.pc")
-                    gcs_gst_apply_root("${_candidate}")
-                    return()
-                endif()
-            endforeach()
-        endif()
-
-        if(GCS_FETCH_GSTREAMER AND _is_required)
+            set(GCS_GSTREAMER_SOURCE "managed" CACHE INTERNAL "Resolved GStreamer SDK source.")
+            message(STATUS "Using managed GStreamer ${GCS_GSTREAMER_VERSION} from ${GCS_GSTREAMER_ROOT}")
+            return()
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
             gcs_gst_download_macos_sdk(_downloaded_root)
             gcs_gst_apply_root("${_downloaded_root}")
+            set(GCS_GSTREAMER_SOURCE "managed" CACHE INTERNAL "Resolved GStreamer SDK source.")
+            message(STATUS "Using managed GStreamer ${GCS_GSTREAMER_VERSION} from ${GCS_GSTREAMER_ROOT}")
+            return()
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            message(FATAL_ERROR
+                "Automatic GStreamer SDK download is not available on Linux. "
+                "Place a complete GStreamer ${GCS_GSTREAMER_VERSION} SDK at ${_managed_root}, "
+                "or set GCS_ALLOW_EXTERNAL_GSTREAMER=ON and GCS_EXTERNAL_GSTREAMER_ROOT=<path>."
+            )
         endif()
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        if(NOT GCS_GSTREAMER_ROOT)
-            set(GCS_GSTREAMER_ROOT "/usr" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
-        endif()
-        gcs_gst_apply_root("${GCS_GSTREAMER_ROOT}")
     endif()
+
+    set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
+    if(_is_required)
+        message(FATAL_ERROR
+            "GStreamer receiver support was requested, but the managed GStreamer "
+            "${GCS_GSTREAMER_VERSION} SDK was not found at ${_managed_root}."
+        )
+    endif()
+
+    message(STATUS
+        "No managed GStreamer ${GCS_GSTREAMER_VERSION} SDK found at ${_managed_root}; "
+        "building without video receiver."
+    )
 endfunction()

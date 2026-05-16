@@ -13,10 +13,16 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "GCS_FETCH_QT_WITH_AQT": "ON",
+        "GCS_QT_FORCE_DOWNLOAD": "OFF",
+        "GCS_ALLOW_EXTERNAL_QT": "OFF",
+        "GCS_USE_SYSTEM_QT": "OFF",
         "GCS_QT_VERSION": "6.10.0",
         "GCS_QT_INSTALL_ROOT": "${sourceDir}/External/Qt",
         "GCS_GSTREAMER_MODE": "AUTO",
         "GCS_FETCH_GSTREAMER": "ON",
+        "GCS_GSTREAMER_FORCE_DOWNLOAD": "OFF",
+        "GCS_ALLOW_EXTERNAL_GSTREAMER": "OFF",
+        "GCS_USE_SYSTEM_GSTREAMER": "OFF",
         "GCS_GSTREAMER_VERSION": "1.28.1",
         "GCS_GSTREAMER_INSTALL_ROOT": "${sourceDir}/External/GStreamer"
       }
@@ -80,7 +86,6 @@
       "binaryDir": "${sourceDir}/build/windows-debug-gstreamer",
       "cacheVariables": {
         "GCS_GSTREAMER_MODE": "ON",
-        "GCS_GSTREAMER_FORCE_DOWNLOAD": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/windows-debug-gstreamer"
       }
     },
@@ -108,7 +113,6 @@
       "binaryDir": "${sourceDir}/build/linux-debug-gstreamer",
       "cacheVariables": {
         "GCS_GSTREAMER_MODE": "ON",
-        "GCS_GSTREAMER_FORCE_DOWNLOAD": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/linux-debug-gstreamer"
       }
     },
@@ -136,7 +140,6 @@
       "binaryDir": "${sourceDir}/build/macos-debug-gstreamer",
       "cacheVariables": {
         "GCS_GSTREAMER_MODE": "ON",
-        "GCS_GSTREAMER_FORCE_DOWNLOAD": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/macos-debug-gstreamer"
       }
     }
