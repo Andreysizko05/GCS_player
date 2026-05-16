@@ -1,23 +1,27 @@
 Qt is bootstrapped with `aqtinstall` during CMake configure on macOS, Linux, and Windows.
-By default, the build uses only the project-managed Qt SDK under `External/Qt`.
-It does not use or reinstall a Qt SDK that happens to be available in `PATH`.
+By default, CMake first tries to use a Qt SDK that is discoverable by standard names and paths.
+If no usable SDK is found, or if the discovered SDK is too old or incomplete, CMake falls back
+to the project-managed Qt SDK under `External/Qt`.
 
 How Qt is fetched:
 
 1. CMake loads [cmake/BootstrapQt.cmake](cmake/BootstrapQt.cmake).
-2. Unless an explicit or system Qt mode is enabled, CMake resolves the expected aqt-managed SDK path: `External/Qt/<version>/<platform-dir>`.
-3. If that SDK is missing and `GCS_FETCH_QT_WITH_AQT=ON`, the bootstrap tries, in order:
+2. Unless an explicit or system-only Qt mode is enabled, CMake first searches `Qt6_DIR`, `QTDIR`/`QT_DIR`, `CMAKE_PREFIX_PATH`, `qmake`, `qtpaths`, and common install locations.
+3. A discovered SDK is accepted only if it is complete and its version is at least `GCS_MINIMUM_QT_VERSION` (default `6.2.0`).
+4. If no acceptable system Qt SDK is found, CMake resolves the expected managed SDK path: `External/Qt/<version>/<platform-dir>`.
+5. If that managed SDK is missing and `GCS_FETCH_QT_WITH_AQT=ON`, the bootstrap tries, in order:
    - `uv tool run --from aqtinstall aqt ...`
    - a preinstalled `aqt` executable
    - a build-local Python virtual environment with `python -m aqt`
-4. `aqtinstall` downloads the official prebuilt Qt packages into `External/Qt/<version>/<platform-dir>`.
-5. `CMAKE_PREFIX_PATH` and `Qt6_DIR` are forced to that SDK, then normal `find_package(Qt6 ...)` continues.
+6. `aqtinstall` downloads the official prebuilt Qt packages into `External/Qt/<version>/<platform-dir>`.
+7. `CMAKE_PREFIX_PATH` and `Qt6_DIR` are forced to the selected SDK, then normal `find_package(Qt6 ...)` continues.
 
 Qt source options:
 
-- Managed SDK: default. Use `GCS_QT_FORCE_DOWNLOAD=ON` to delete and refresh only the managed SDK under `GCS_QT_INSTALL_ROOT`.
+- Auto mode: default. CMake prefers a usable system Qt SDK and falls back to the managed SDK if discovery fails.
+- Managed SDK: use `GCS_QT_FORCE_DOWNLOAD=ON` to delete and refresh the managed SDK under `GCS_QT_INSTALL_ROOT`, even if a system SDK is available.
 - Explicit SDK path: set `GCS_ALLOW_EXTERNAL_QT=ON` and `GCS_EXTERNAL_QT_ROOT=<path>`.
-- System SDK: set `GCS_USE_SYSTEM_QT=ON`. CMake searches `Qt6_DIR`, `QTDIR`/`QT_DIR`, `CMAKE_PREFIX_PATH`, `qmake`, and `qtpaths`.
+- System-only SDK: set `GCS_USE_SYSTEM_QT=ON` to fail unless a usable system Qt SDK is found.
 
 Using an external Qt SDK:
 
@@ -28,7 +32,7 @@ cmake --preset windows-debug ^
   -DGCS_QT_VERSION=6.10.0
 ```
 
-`GCS_EXTERNAL_QT_ROOT` is ignored unless `GCS_ALLOW_EXTERNAL_QT=ON`. The external Qt version must exactly match `GCS_QT_VERSION`.
+`GCS_EXTERNAL_QT_ROOT` is ignored unless `GCS_ALLOW_EXTERNAL_QT=ON`. The external Qt SDK must be complete and at least `GCS_MINIMUM_QT_VERSION`.
 `GCS_QT_FORCE_DOWNLOAD` cannot be combined with external or system Qt modes.
 
 Why `uv` is used if available:
@@ -60,18 +64,21 @@ How GStreamer is connected:
 
 How GStreamer is found:
 
-- CMake first selects a GStreamer version from the Qt compatibility table in [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake). Currently Qt `6.10.x` requires GStreamer `1.28.1`.
-- CMake asks `pkg-config` for exact `gstreamer-1.0`, `gstreamer-app-1.0`, and `gstreamer-video-1.0` versions and creates `PkgConfig::GSTREAMER`.
+- CMake first selects the managed download version from the Qt compatibility table in [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake). Currently managed Qt `6.10.x` downloads managed GStreamer `1.28.1`.
+- In the default auto mode, CMake searches `GSTREAMER_*` roots, `gst-inspect-1.0` in `PATH`, `pkg-config`, and standard OS install locations before it falls back to the managed SDK.
+- A discovered SDK is accepted only if it is complete, its version is at least `GCS_MINIMUM_GSTREAMER_VERSION` (default `1.20.0`), `pkg-config` can resolve the required modules from that SDK, and all required plugins pass `gst-inspect-1.0`.
+- CMake asks `pkg-config` for exact `gstreamer-1.0`, `gstreamer-app-1.0`, and `gstreamer-video-1.0` versions that match the selected SDK and creates `PkgConfig::GSTREAMER`.
 - `PKG_CONFIG_LIBDIR` is restricted to the selected SDK root, so an unrelated system `pkg-config` database is not searched.
 - To use an already installed GStreamer SDK by path, set both `GCS_ALLOW_EXTERNAL_GSTREAMER=ON` and `GCS_EXTERNAL_GSTREAMER_ROOT=<path>`.
-- To use a system GStreamer SDK, set `GCS_USE_SYSTEM_GSTREAMER=ON`. CMake searches `GSTREAMER_*` roots, `gst-inspect-1.0` in `PATH`, `pkg-config`, and standard OS install locations, then verifies that the SDK is complete and version-compatible.
+- To require a system GStreamer SDK instead of falling back to the managed one, set `GCS_USE_SYSTEM_GSTREAMER=ON`.
 - At runtime, [GstVideoReceiver.cpp](Modules/Video/Src/GstVideoReceiver.cpp) looks for sibling folders like `gstreamer-1.0`, `gio/modules`, `gstreamer-runtime`, and `gstreamer-tools`, then sets process-local `GST_PLUGIN_PATH`, `GIO_EXTRA_MODULES`, `GST_PLUGIN_SCANNER`, and `PATH` before calling `gst_init_check()`. CMake does not write those paths into the user or system environment.
 
 GStreamer source options:
 
-- Managed SDK: default. Use `GCS_GSTREAMER_FORCE_DOWNLOAD=ON` to refresh only the managed SDK under `GCS_GSTREAMER_INSTALL_ROOT`.
+- Auto mode: default. CMake prefers a usable system GStreamer SDK and falls back to the managed SDK if discovery fails.
+- Managed SDK: use `GCS_GSTREAMER_FORCE_DOWNLOAD=ON` to refresh only the managed SDK under `GCS_GSTREAMER_INSTALL_ROOT`, even if a system SDK is available.
 - Explicit SDK path: set `GCS_ALLOW_EXTERNAL_GSTREAMER=ON` and `GCS_EXTERNAL_GSTREAMER_ROOT=<path>`.
-- System SDK: set `GCS_USE_SYSTEM_GSTREAMER=ON`.
+- System-only SDK: set `GCS_USE_SYSTEM_GSTREAMER=ON`.
 - The force-download option cannot be combined with explicit or system GStreamer modes.
 - Required plugins are always verified during configure with `gst-inspect-1.0`.
 - CMake does not add the managed SDK `bin` directory to the user or system `PATH`.
@@ -84,7 +91,7 @@ cmake --preset windows-debug ^
   -DGCS_EXTERNAL_GSTREAMER_ROOT=C:/gstreamer/1.0/msvc_x86_64
 ```
 
-The external SDK must contain matching development files, runtime tools, and plugins. CMake verifies required plugins with `gst-inspect-1.0`; if any required plugin reports a version different from the Qt-compatible GStreamer version, configure fails.
+The external SDK must contain usable development files, runtime tools, and required plugins. CMake verifies it with both `pkg-config` and `gst-inspect-1.0`; if the SDK is incomplete, too old, or missing plugins, configure fails.
 
 How GStreamer files are staged:
 
@@ -92,7 +99,7 @@ How GStreamer files are staged:
 - GStreamer is bootstrapped by [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake) when the managed SDK is selected and `GCS_FETCH_GSTREAMER=ON`.
 - On Windows, CMake downloads the official GStreamer MSVC SDK installer into `External/GStreamer` and installs it silently into a project-local prefix.
 - On macOS, CMake downloads the official runtime and development `.pkg` files and merges them into `External/GStreamer`.
-- On Linux, CMake no longer falls back to `/usr` unless `GCS_USE_SYSTEM_GSTREAMER=ON`. Put a complete SDK under the managed root reported by CMake, use an explicit root, or opt into system discovery.
+- On Linux, automatic GStreamer download is still unavailable. Use a valid system SDK, an explicit SDK path, or place a complete SDK under the managed root reported by CMake.
 - CMake queries `pkg-config` for `pluginsdir`, `pluginscannerdir`, `giomoduledir`, and related paths.
 - On Windows, those directories are copied next to the built app, because local `.exe` execution usually needs nearby DLLs, plugins, and the plugin scanner.
 - On macOS and Linux, stale bundled GStreamer folders are removed so the selected SDK/runtime root is used consistently.

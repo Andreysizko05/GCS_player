@@ -4,6 +4,9 @@ option(GCS_FETCH_QT_WITH_AQT "Automatically install Qt with aqtinstall during co
 option(GCS_QT_FORCE_DOWNLOAD "Refresh the managed Qt SDK with aqtinstall; cannot be combined with external/system Qt." OFF)
 option(GCS_ALLOW_EXTERNAL_QT "Allow an explicitly provided Qt SDK instead of the aqt-managed SDK." OFF)
 option(GCS_USE_SYSTEM_QT "Allow Qt discovery from common system environment variables and PATH." OFF)
+set(GCS_MINIMUM_QT_VERSION "6.2.0" CACHE STRING
+    "Minimum acceptable Qt version for auto-discovered or explicitly provided SDKs."
+)
 set(GCS_QT_VERSION "6.10.0" CACHE STRING "Qt version installed via aqtinstall.")
 set(GCS_QT_INSTALL_ROOT "${PROJECT_SOURCE_DIR}/External/Qt" CACHE PATH "Root directory that stores aqt-installed Qt SDKs.")
 set(GCS_EXTERNAL_QT_ROOT "" CACHE PATH "Explicit Qt SDK root used only when GCS_ALLOW_EXTERNAL_QT=ON.")
@@ -142,21 +145,68 @@ function(gcs_require_qt_version qt_config_dir expected_version)
         )
     endif()
 
-    set(GCS_QT_RESOLVED_VERSION "${_actual_qt_version}" CACHE INTERNAL "Resolved Qt version.")
+    set(GCS_QT_RESOLVED_VERSION "${_actual_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
 endfunction()
 
-function(gcs_require_qt_module_configs qt_root)
+function(gcs_check_qt_module_configs qt_root out_ok out_missing_modules)
     set(_required_modules Widgets LinguistTools Multimedia MultimediaWidgets)
+    set(_missing_modules)
 
     foreach(_module IN LISTS _required_modules)
         set(_module_config "${qt_root}/lib/cmake/Qt6${_module}/Qt6${_module}Config.cmake")
         if(NOT EXISTS "${_module_config}")
-            message(FATAL_ERROR
-                "Qt ${GCS_QT_VERSION} at ${qt_root} is incomplete: "
-                "missing Qt6${_module}Config.cmake."
-            )
+            list(APPEND _missing_modules "Qt6${_module}")
         endif()
     endforeach()
+
+    if(_missing_modules)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        set(${out_missing_modules} "${_missing_modules}" PARENT_SCOPE)
+    else()
+        set(${out_ok} TRUE PARENT_SCOPE)
+        set(${out_missing_modules} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(gcs_require_qt_module_configs qt_root)
+    gcs_check_qt_module_configs("${qt_root}" _modules_ok _missing_modules)
+    if(NOT _modules_ok)
+        list(JOIN _missing_modules ", " _missing_modules_text)
+        message(FATAL_ERROR
+            "Qt at ${qt_root} is incomplete: missing ${_missing_modules_text}."
+        )
+    endif()
+endfunction()
+
+function(gcs_validate_qt_candidate qt_root qt_config_dir minimum_version out_ok out_version out_reason)
+    set(_candidate_ok FALSE)
+    set(_candidate_version "")
+    set(_candidate_reason "")
+
+    if(NOT qt_root OR NOT qt_config_dir OR NOT EXISTS "${qt_config_dir}/Qt6Config.cmake")
+        set(_candidate_reason "Qt6Config.cmake was not found")
+    else()
+        gcs_read_qt_config_version("${qt_config_dir}" _candidate_version)
+        if(NOT _candidate_version)
+            set(_candidate_reason "could not read the Qt version from ${qt_config_dir}")
+        elseif(_candidate_version VERSION_LESS "${minimum_version}")
+            set(_candidate_reason
+                "Qt ${_candidate_version} is below the minimum supported version ${minimum_version}"
+            )
+        else()
+            gcs_check_qt_module_configs("${qt_root}" _modules_ok _missing_modules)
+            if(NOT _modules_ok)
+                list(JOIN _missing_modules ", " _missing_modules_text)
+                set(_candidate_reason "missing required modules: ${_missing_modules_text}")
+            else()
+                set(_candidate_ok TRUE)
+            endif()
+        endif()
+    endif()
+
+    set(${out_ok} "${_candidate_ok}" PARENT_SCOPE)
+    set(${out_version} "${_candidate_version}" PARENT_SCOPE)
+    set(${out_reason} "${_candidate_reason}" PARENT_SCOPE)
 endfunction()
 
 function(gcs_qt_path_must_be_under_root path root_dir label)
@@ -199,9 +249,10 @@ function(gcs_try_qt_root_candidate candidate out_root out_config_dir)
     endif()
 endfunction()
 
-function(gcs_find_system_qt out_root out_config_dir)
+function(gcs_find_system_qt out_root out_config_dir out_version out_summary)
     set(_candidate_roots)
     set(_candidate_config_dirs)
+    set(_rejection_messages)
 
     if(DEFINED Qt6_DIR AND Qt6_DIR)
         list(APPEND _candidate_config_dirs "${Qt6_DIR}")
@@ -252,22 +303,63 @@ function(gcs_find_system_qt out_root out_config_dir)
         endif()
     endif()
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        file(GLOB _windows_qt_roots LIST_DIRECTORIES TRUE
+            "C:/Qt/*/msvc*"
+            "C:/Qt/*/clang_64"
+        )
+        list(APPEND _candidate_roots ${_windows_qt_roots})
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        list(APPEND _candidate_roots
+            "/opt/homebrew/opt/qt"
+            "/usr/local/opt/qt"
+        )
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        list(APPEND _candidate_roots
+            "/opt/qt6"
+            "/usr/local/opt/qt6"
+            "/usr/lib/qt6"
+        )
+    endif()
+
+    list(REMOVE_DUPLICATES _candidate_config_dirs)
+    list(REMOVE_DUPLICATES _candidate_roots)
+
     foreach(_candidate IN LISTS _candidate_config_dirs _candidate_roots)
         gcs_try_qt_root_candidate("${_candidate}" _qt_root _qt_config_dir)
         if(_qt_root AND _qt_config_dir)
-            gcs_read_qt_config_version("${_qt_config_dir}" _candidate_version)
-            if("${_candidate_version}" STREQUAL "${GCS_QT_VERSION}")
+            gcs_validate_qt_candidate(
+                "${_qt_root}"
+                "${_qt_config_dir}"
+                "${GCS_MINIMUM_QT_VERSION}"
+                _candidate_ok
+                _candidate_version
+                _candidate_reason
+            )
+            if(_candidate_ok)
                 set(${out_root} "${_qt_root}" PARENT_SCOPE)
                 set(${out_config_dir} "${_qt_config_dir}" PARENT_SCOPE)
+                set(${out_version} "${_candidate_version}" PARENT_SCOPE)
+                set(${out_summary} "" PARENT_SCOPE)
                 return()
+            endif()
+
+            if(_candidate_reason)
+                list(APPEND _rejection_messages "${_qt_root}: ${_candidate_reason}")
             endif()
         endif()
     endforeach()
 
-    message(FATAL_ERROR
-        "GCS_USE_SYSTEM_QT=ON, but no complete system Qt ${GCS_QT_VERSION} SDK "
-        "was found via Qt6_DIR, QTDIR/QT_DIR, CMAKE_PREFIX_PATH, qmake, or qtpaths."
-    )
+    if(_rejection_messages)
+        list(JOIN _rejection_messages "\n  " _summary_text)
+    else()
+        set(_summary_text "")
+    endif()
+
+    set(${out_root} "" PARENT_SCOPE)
+    set(${out_config_dir} "" PARENT_SCOPE)
+    set(${out_version} "" PARENT_SCOPE)
+    set(${out_summary} "${_summary_text}" PARENT_SCOPE)
 endfunction()
 
 function(gcs_resolve_aqt_command out_var)
@@ -351,6 +443,13 @@ if(GCS_ALLOW_EXTERNAL_QT AND GCS_USE_SYSTEM_QT)
     )
 endif()
 
+if(GCS_QT_VERSION VERSION_LESS "${GCS_MINIMUM_QT_VERSION}")
+    message(FATAL_ERROR
+        "GCS_QT_VERSION (${GCS_QT_VERSION}) is below the minimum supported Qt version "
+        "${GCS_MINIMUM_QT_VERSION}."
+    )
+endif()
+
 if(GCS_ALLOW_EXTERNAL_QT)
     if(GCS_EXTERNAL_QT_ROOT)
         gcs_get_qt_config_dir_from_root("${GCS_EXTERNAL_QT_ROOT}" _gcs_qt_cmake_dir)
@@ -371,25 +470,51 @@ if(GCS_ALLOW_EXTERNAL_QT)
         )
     endif()
 
-    gcs_require_qt_version("${_gcs_qt_cmake_dir}" "${GCS_QT_VERSION}")
-    gcs_require_qt_module_configs("${_gcs_qt_root_dir}")
+    gcs_validate_qt_candidate(
+        "${_gcs_qt_root_dir}"
+        "${_gcs_qt_cmake_dir}"
+        "${GCS_MINIMUM_QT_VERSION}"
+        _gcs_qt_ok
+        _gcs_qt_version
+        _gcs_qt_reason
+    )
+    if(NOT _gcs_qt_ok)
+        message(FATAL_ERROR
+            "The explicitly provided Qt SDK at ${_gcs_qt_root_dir} is not usable: "
+            "${_gcs_qt_reason}"
+        )
+    endif()
+
     list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
     set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
     set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
+    set(GCS_QT_RESOLVED_VERSION "${_gcs_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
     set(GCS_QT_SOURCE "external" CACHE INTERNAL "Resolved Qt SDK source.")
-    message(STATUS "Using explicitly provided Qt ${GCS_QT_VERSION} from ${_gcs_qt_root_dir}")
+    message(STATUS "Using explicitly provided Qt ${GCS_QT_RESOLVED_VERSION} from ${_gcs_qt_root_dir}")
     return()
 endif()
 
 if(GCS_USE_SYSTEM_QT)
-    gcs_find_system_qt(_gcs_qt_root_dir _gcs_qt_cmake_dir)
-    gcs_require_qt_version("${_gcs_qt_cmake_dir}" "${GCS_QT_VERSION}")
-    gcs_require_qt_module_configs("${_gcs_qt_root_dir}")
+    gcs_find_system_qt(_gcs_qt_root_dir _gcs_qt_cmake_dir _gcs_qt_version _gcs_qt_summary)
+    if(NOT _gcs_qt_root_dir OR NOT _gcs_qt_cmake_dir)
+        if(_gcs_qt_summary)
+            set(_gcs_qt_rejections_text "\nRejected candidates:\n  ${_gcs_qt_summary}")
+        else()
+            set(_gcs_qt_rejections_text "")
+        endif()
+        message(FATAL_ERROR
+            "GCS_USE_SYSTEM_QT=ON, but no complete system Qt >= ${GCS_MINIMUM_QT_VERSION} "
+            "SDK was found via Qt6_DIR, QTDIR/QT_DIR, CMAKE_PREFIX_PATH, qmake, qtpaths, "
+            "or common install locations.${_gcs_qt_rejections_text}"
+        )
+    endif()
+
     list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
     set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
     set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
+    set(GCS_QT_RESOLVED_VERSION "${_gcs_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
     set(GCS_QT_SOURCE "system" CACHE INTERNAL "Resolved Qt SDK source.")
-    message(STATUS "Using system Qt ${GCS_QT_VERSION} from ${_gcs_qt_root_dir}")
+    message(STATUS "Using system Qt ${GCS_QT_RESOLVED_VERSION} from ${_gcs_qt_root_dir}")
     return()
 endif()
 
@@ -415,6 +540,37 @@ if(GCS_QT_FORCE_DOWNLOAD AND EXISTS "${_gcs_qt_root_dir}")
     gcs_qt_path_must_be_under_root("${_gcs_qt_root_dir}" "${GCS_QT_INSTALL_ROOT}" "Managed Qt SDK root")
     message(STATUS "Refreshing managed Qt ${GCS_QT_VERSION} at ${_gcs_qt_root_dir}")
     file(REMOVE_RECURSE "${_gcs_qt_root_dir}")
+endif()
+
+if(NOT GCS_QT_FORCE_DOWNLOAD)
+    gcs_find_system_qt(_gcs_auto_qt_root _gcs_auto_qt_cmake_dir _gcs_auto_qt_version _gcs_auto_qt_summary)
+    if(_gcs_auto_qt_root AND "${_gcs_auto_qt_root}" STREQUAL "${_gcs_qt_root_dir}")
+        set(_gcs_auto_qt_root "")
+        set(_gcs_auto_qt_cmake_dir "")
+        set(_gcs_auto_qt_version "")
+    endif()
+    if(_gcs_auto_qt_root AND _gcs_auto_qt_cmake_dir)
+        list(PREPEND CMAKE_PREFIX_PATH "${_gcs_auto_qt_root}")
+        set(Qt6_DIR "${_gcs_auto_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
+        set(GCS_QT_ROOT_DIR "${_gcs_auto_qt_root}" CACHE INTERNAL "Resolved Qt installation root.")
+        set(GCS_QT_RESOLVED_VERSION "${_gcs_auto_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
+        set(GCS_QT_SOURCE "system-auto" CACHE INTERNAL "Resolved Qt SDK source.")
+        message(STATUS "Using auto-discovered system Qt ${GCS_QT_RESOLVED_VERSION} from ${_gcs_auto_qt_root}")
+        return()
+    endif()
+
+    if(_gcs_auto_qt_summary)
+        message(STATUS
+            "No usable system Qt >= ${GCS_MINIMUM_QT_VERSION} was auto-discovered; "
+            "falling back to managed Qt ${GCS_QT_VERSION}.\n"
+            "Rejected candidates:\n  ${_gcs_auto_qt_summary}"
+        )
+    else()
+        message(STATUS
+            "No system Qt was auto-discovered by standard names or paths; "
+            "falling back to managed Qt ${GCS_QT_VERSION}."
+        )
+    endif()
 endif()
 
 if(NOT EXISTS "${_gcs_qt_cmake_dir}/Qt6Config.cmake")
@@ -475,4 +631,4 @@ set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
 set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
 set(GCS_QT_SOURCE "aqt" CACHE INTERNAL "Resolved Qt SDK source.")
 
-message(STATUS "Using aqt-managed Qt ${GCS_QT_VERSION} from ${_gcs_qt_root_dir}")
+message(STATUS "Using aqt-managed Qt ${GCS_QT_RESOLVED_VERSION} from ${_gcs_qt_root_dir}")

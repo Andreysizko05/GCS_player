@@ -34,7 +34,7 @@ if(GCS_GSTREAMER_ROOT)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools Multimedia MultimediaWidgets)
+find_package(Qt6 ${GCS_MINIMUM_QT_VERSION} REQUIRED COMPONENTS Widgets LinguistTools Multimedia MultimediaWidgets)
 find_package(PkgConfig REQUIRED)
 
 if(NOT GCS_GSTREAMER_ROOT)
@@ -45,20 +45,29 @@ endif()
 
 get_cmake_property(_gcs_cache_vars CACHE_VARIABLES)
 foreach(_gcs_cache_var IN LISTS _gcs_cache_vars)
-    if(_gcs_cache_var MATCHES "^pkgcfg_lib_GSTREAMER_")
+    if(_gcs_cache_var MATCHES "^pkgcfg_lib_GSTREAMER_"
+        OR _gcs_cache_var MATCHES "^GSTREAMER_"
+        OR _gcs_cache_var STREQUAL "__pkg_config_arguments_GSTREAMER"
+        OR _gcs_cache_var STREQUAL "__pkg_config_checked_GSTREAMER")
         unset(${_gcs_cache_var} CACHE)
     endif()
 endforeach()
 
+if(GCS_GSTREAMER_RESOLVED_VERSION)
+    set(_gcs_required_gstreamer_version "${GCS_GSTREAMER_RESOLVED_VERSION}")
+else()
+    set(_gcs_required_gstreamer_version "${GCS_GSTREAMER_VERSION}")
+endif()
+
 pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
-    "gstreamer-1.0 = ${GCS_GSTREAMER_VERSION}"
-    "gstreamer-app-1.0 = ${GCS_GSTREAMER_VERSION}"
-    "gstreamer-video-1.0 = ${GCS_GSTREAMER_VERSION}"
+    "gstreamer-1.0 = ${_gcs_required_gstreamer_version}"
+    "gstreamer-app-1.0 = ${_gcs_required_gstreamer_version}"
+    "gstreamer-video-1.0 = ${_gcs_required_gstreamer_version}"
 )
 gcs_verify_gstreamer_pkg_config_paths()
 gcs_verify_gstreamer_plugins()
 message(STATUS
-    "GStreamer is required and enabled with ${GCS_GSTREAMER_VERSION} "
+    "GStreamer is required and enabled with ${_gcs_required_gstreamer_version} "
     "from ${GCS_GSTREAMER_ROOT}"
 )
 
