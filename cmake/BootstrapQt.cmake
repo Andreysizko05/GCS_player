@@ -2,7 +2,7 @@ include_guard(GLOBAL)
 
 option(GCS_FETCH_QT_WITH_AQT "Automatically install Qt with aqtinstall during configure." ON)
 set(GCS_QT_VERSION "6.10.0" CACHE STRING "Qt version installed via aqtinstall.")
-set(GCS_QT_INSTALL_ROOT "${PROJECT_SOURCE_DIR}/.qt-sdk" CACHE PATH "Root directory that stores aqt-installed Qt SDKs.")
+set(GCS_QT_INSTALL_ROOT "${PROJECT_SOURCE_DIR}/External/Qt" CACHE PATH "Root directory that stores aqt-installed Qt SDKs.")
 set(GCS_QT_EXTRA_MODULES "qtmultimedia" CACHE STRING "Additional Qt modules installed with aqtinstall.")
 set(GCS_QT_HOST "" CACHE STRING "Optional aqt host override, for example windows, mac, or linux.")
 set(GCS_QT_ARCH "" CACHE STRING "Optional aqt desktop architecture override, for example clang_64 or win64_msvc2022_64.")

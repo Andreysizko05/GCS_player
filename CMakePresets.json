@@ -14,11 +14,11 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "GCS_FETCH_QT_WITH_AQT": "ON",
         "GCS_QT_VERSION": "6.10.0",
-        "GCS_QT_INSTALL_ROOT": "${sourceDir}/.qt-sdk",
+        "GCS_QT_INSTALL_ROOT": "${sourceDir}/External/Qt",
         "GCS_GSTREAMER_MODE": "AUTO",
         "GCS_FETCH_GSTREAMER": "ON",
         "GCS_GSTREAMER_VERSION": "1.28.1",
-        "GCS_GSTREAMER_INSTALL_ROOT": "${sourceDir}/.gstreamer-sdk"
+        "GCS_GSTREAMER_INSTALL_ROOT": "${sourceDir}/External/GStreamer"
       }
     },
     {

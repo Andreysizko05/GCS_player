@@ -5,7 +5,7 @@ option(GCS_GSTREAMER_FORCE_DOWNLOAD "Ignore system GStreamer SDKs and use a proj
 option(GCS_GSTREAMER_REQUIRE_CHECKSUM "Fail if an auto-downloaded GStreamer package has no pinned checksum." OFF)
 
 set(GCS_GSTREAMER_VERSION "1.28.1" CACHE STRING "GStreamer SDK version used for automatic downloads.")
-set(GCS_GSTREAMER_INSTALL_ROOT "${PROJECT_SOURCE_DIR}/.gstreamer-sdk" CACHE PATH
+set(GCS_GSTREAMER_INSTALL_ROOT "${PROJECT_SOURCE_DIR}/External/GStreamer" CACHE PATH
     "Root directory that stores auto-downloaded GStreamer SDKs."
 )
 

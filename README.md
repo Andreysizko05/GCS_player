@@ -8,7 +8,7 @@ How Qt is fetched:
    - `uv tool run --from aqtinstall aqt ...`
    - a preinstalled `aqt` executable
    - a build-local Python virtual environment with `python -m aqt`
-4. `aqtinstall` downloads the official prebuilt Qt packages into `.qt-sdk/<version>/<platform-dir>`.
+4. `aqtinstall` downloads the official prebuilt Qt packages into `External/Qt/<version>/<platform-dir>`.
 5. `CMAKE_PREFIX_PATH` and `Qt6_DIR` are pointed at that SDK, then normal `find_package(Qt6 ...)` continues.
 
 Why `uv` is used if available:
@@ -26,6 +26,12 @@ Why `aqtinstall` is used for Qt:
 - It keeps the Qt layout predictable across all three desktop OSes.
 - It avoids rebuilding Qt from source through `vcpkg`, which is much slower and more fragile.
 
+Project layout:
+
+- `Core/Inc` and `Core/Src` contain the application shell and main window.
+- `Modules/Video/Inc` and `Modules/Video/Src` contain the GStreamer video receiver module.
+- `External` is reserved for third-party git submodules and bootstrapped SDKs.
+
 How GStreamer is connected:
 
 - GStreamer is optional and is controlled by `GCS_GSTREAMER_MODE`.
@@ -38,14 +44,14 @@ How GStreamer is found:
 - CMake asks `pkg-config` for compiler/linker flags and creates `PkgConfig::GSTREAMER`.
 - If you have a non-standard GStreamer installation, set `GCS_GSTREAMER_ROOT` to its prefix. CMake will prepend `<root>/bin` to `PATH` and common `pkgconfig` directories to `PKG_CONFIG_PATH`.
 - The `*-gstreamer` presets set `GCS_GSTREAMER_FORCE_DOWNLOAD=ON`, so they use a project-local SDK when supported instead of relying on a partial system install.
-- At runtime, [GstVideoReceiver.cpp](GstVideoReceiver.cpp) looks for sibling folders like `gstreamer-1.0`, `gio/modules`, `gstreamer-runtime`, and `gstreamer-tools`, then exports `GST_PLUGIN_PATH`, `GIO_EXTRA_MODULES`, `GST_PLUGIN_SCANNER`, and `PATH` before calling `gst_init_check()`.
+- At runtime, [GstVideoReceiver.cpp](Modules/Video/Src/GstVideoReceiver.cpp) looks for sibling folders like `gstreamer-1.0`, `gio/modules`, `gstreamer-runtime`, and `gstreamer-tools`, then exports `GST_PLUGIN_PATH`, `GIO_EXTRA_MODULES`, `GST_PLUGIN_SCANNER`, and `PATH` before calling `gst_init_check()`.
 
 How GStreamer files are staged:
 
 - Qt itself is downloaded automatically.
 - GStreamer is also bootstrapped by [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake) when `GCS_GSTREAMER_MODE=ON` and `GCS_FETCH_GSTREAMER=ON`.
-- On Windows, CMake downloads the official GStreamer MSVC SDK installer into `.gstreamer-sdk` and installs it silently into a project-local prefix.
-- On macOS, CMake downloads the official runtime and development `.pkg` files and merges them into `.gstreamer-sdk`.
+- On Windows, CMake downloads the official GStreamer MSVC SDK installer into `External/GStreamer` and installs it silently into a project-local prefix.
+- On macOS, CMake downloads the official runtime and development `.pkg` files and merges them into `External/GStreamer`.
 - On Linux, the project follows QGroundControl's default desktop approach and uses the system GStreamer packages under `/usr`; install the distro development packages if `pkg-config` cannot find them.
 - When GStreamer is enabled, CMake queries `pkg-config` for `pluginsdir`, `pluginscannerdir`, `giomoduledir`, and related paths.
 - On Windows, those directories are copied next to the built app, because local `.exe` execution usually needs nearby DLLs, plugins, and the plugin scanner.

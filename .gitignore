@@ -4,6 +4,8 @@ install/
 install_*/
 .qt-sdk/
 .gstreamer-sdk/
+External/Qt/
+External/GStreamer/
 .vscode/
 
 

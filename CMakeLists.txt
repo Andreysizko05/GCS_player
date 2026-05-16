@@ -17,6 +17,11 @@ set(GCS_GSTREAMER_ROOT "" CACHE PATH
     "Optional GStreamer SDK/runtime root used to seed PATH and PKG_CONFIG_PATH."
 )
 
+set(GCS_CORE_INC_DIR "${PROJECT_SOURCE_DIR}/Core/Inc")
+set(GCS_CORE_SRC_DIR "${PROJECT_SOURCE_DIR}/Core/Src")
+set(GCS_VIDEO_MODULE_INC_DIR "${PROJECT_SOURCE_DIR}/Modules/Video/Inc")
+set(GCS_VIDEO_MODULE_SRC_DIR "${PROJECT_SOURCE_DIR}/Modules/Video/Src")
+
 include(cmake/BootstrapQt.cmake)
 include(cmake/BootstrapGStreamer.cmake)
 
@@ -87,16 +92,16 @@ if(GCS_ENABLE_GSTREAMER)
 endif()
 
 set(GCS_PLAYER_SOURCES
-    main.cpp
-    MainWindow.cpp
-    MainWindow.h
-    MainWindow.ui
+    "${GCS_CORE_SRC_DIR}/main.cpp"
+    "${GCS_CORE_SRC_DIR}/MainWindow.cpp"
+    "${GCS_CORE_INC_DIR}/MainWindow.h"
+    "${GCS_CORE_SRC_DIR}/MainWindow.ui"
 )
 
 if(GCS_ENABLE_GSTREAMER)
     list(APPEND GCS_PLAYER_SOURCES
-        GstVideoReceiver.cpp
-        GstVideoReceiver.h
+        "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
+        "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoReceiver.h"
     )
 endif()
 
@@ -108,13 +113,20 @@ qt_add_executable(GCS_player
 )
 
 qt_add_translations(GCS_player
-    TS_FILES GCS_player_uk_UA.ts
+    TS_FILES "${GCS_CORE_SRC_DIR}/GCS_player_uk_UA.ts"
     RESOURCE_PREFIX /i18n
+)
+
+target_include_directories(GCS_player PRIVATE
+    "${GCS_CORE_INC_DIR}"
 )
 
 target_link_libraries(GCS_player PRIVATE Qt6::Widgets)
 
 if(GCS_ENABLE_GSTREAMER)
+    target_include_directories(GCS_player PRIVATE
+        "${GCS_VIDEO_MODULE_INC_DIR}"
+    )
     target_link_libraries(GCS_player PRIVATE
         Qt6::Multimedia
         Qt6::MultimediaWidgets
