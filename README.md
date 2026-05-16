@@ -108,6 +108,10 @@ ctest --preset macos-debug
 ./build/macos-debug/GCS_player.app/Contents/MacOS/GCS_player
 ```
 
+On a fresh macOS build directory, the first `cmake --preset ...` or `cmake --build --preset ...`
+can take a few minutes while CMake expands the managed GStreamer packages and `gst-inspect-1.0`
+builds a local plugin registry under `build/<preset>`.
+
 Linux:
 
 ```bash

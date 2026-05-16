@@ -22,6 +22,18 @@ include(cmake/BootstrapGStreamer.cmake)
 
 gcs_bootstrap_gstreamer()
 
+if(GCS_GSTREAMER_ROOT)
+    # FindPkgConfig may resolve -lfoo entries with find_library(), so make the
+    # selected SDK root the first place CMake searches for GStreamer dylibs.
+    list(PREPEND CMAKE_PREFIX_PATH "${GCS_GSTREAMER_ROOT}")
+    if(EXISTS "${GCS_GSTREAMER_ROOT}/lib")
+        list(PREPEND CMAKE_LIBRARY_PATH "${GCS_GSTREAMER_ROOT}/lib")
+    endif()
+    if(EXISTS "${GCS_GSTREAMER_ROOT}/include")
+        list(PREPEND CMAKE_INCLUDE_PATH "${GCS_GSTREAMER_ROOT}/include")
+    endif()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools Multimedia MultimediaWidgets)
 find_package(PkgConfig REQUIRED)
 
@@ -30,6 +42,13 @@ if(NOT GCS_GSTREAMER_ROOT)
         "GStreamer is required, but no managed, external, or system GStreamer root was selected."
     )
 endif()
+
+get_cmake_property(_gcs_cache_vars CACHE_VARIABLES)
+foreach(_gcs_cache_var IN LISTS _gcs_cache_vars)
+    if(_gcs_cache_var MATCHES "^pkgcfg_lib_GSTREAMER_")
+        unset(${_gcs_cache_var} CACHE)
+    endif()
+endforeach()
 
 pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
     "gstreamer-1.0 = ${GCS_GSTREAMER_VERSION}"

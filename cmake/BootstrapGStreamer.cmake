@@ -758,7 +758,19 @@ function(gcs_verify_gstreamer_plugins)
         )
     endif()
 
+    list(LENGTH GCS_REQUIRED_GSTREAMER_PLUGINS _required_plugin_count)
+    message(STATUS
+        "Checking ${_required_plugin_count} required GStreamer plugins with ${_gst_inspect}. "
+        "The first configure in a new build directory can take a while while gst-inspect "
+        "creates ${CMAKE_BINARY_DIR}/gstreamer-registry-${GCS_GSTREAMER_VERSION}.bin."
+    )
+
+    set(_plugin_index 0)
     foreach(_plugin IN LISTS GCS_REQUIRED_GSTREAMER_PLUGINS)
+        math(EXPR _plugin_index "${_plugin_index} + 1")
+        message(STATUS
+            "Checking GStreamer plugin ${_plugin_index}/${_required_plugin_count}: ${_plugin}"
+        )
         execute_process(
             COMMAND ${CMAKE_COMMAND} -E env ${_inspect_env}
                 "${_gst_inspect}" "--plugin" "${_plugin}"
@@ -767,8 +779,16 @@ function(gcs_verify_gstreamer_plugins)
             ERROR_VARIABLE _inspect_stderr
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_STRIP_TRAILING_WHITESPACE
+            TIMEOUT 120
         )
         if(NOT _inspect_result EQUAL 0)
+            if(_inspect_result MATCHES "timeout")
+                message(FATAL_ERROR
+                    "Timed out while inspecting GStreamer plugin '${_plugin}'.\n"
+                    "Registry file: ${CMAKE_BINARY_DIR}/gstreamer-registry-${GCS_GSTREAMER_VERSION}.bin\n"
+                    "${_inspect_stdout}\n${_inspect_stderr}"
+                )
+            endif()
             message(FATAL_ERROR
                 "Required GStreamer plugin '${_plugin}' was not found in ${_gst_pluginsdir}.\n"
                 "${_inspect_stdout}\n${_inspect_stderr}"
