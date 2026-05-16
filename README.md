@@ -54,10 +54,9 @@ Project layout:
 
 How GStreamer is connected:
 
-- GStreamer is optional and is controlled by `GCS_GSTREAMER_MODE`.
-- `AUTO`: video support is enabled only if the selected managed, explicit, or system SDK is present and valid. System GStreamer is used only when `GCS_USE_SYSTEM_GSTREAMER=ON`.
-- `ON`: configuration fails if those development packages are missing. The `*-gstreamer` presets use this mode.
-- `OFF`: video support is disabled even if GStreamer is installed.
+- GStreamer is required. The project does not support configuring, building, or running without it.
+- The normal presets configure video support directly; there are no separate video-enabled preset variants.
+- If no complete compatible GStreamer SDK is selected, CMake configuration fails.
 
 How GStreamer is found:
 
@@ -65,8 +64,8 @@ How GStreamer is found:
 - CMake asks `pkg-config` for exact `gstreamer-1.0`, `gstreamer-app-1.0`, and `gstreamer-video-1.0` versions and creates `PkgConfig::GSTREAMER`.
 - `PKG_CONFIG_LIBDIR` is restricted to the selected SDK root, so an unrelated system `pkg-config` database is not searched.
 - To use an already installed GStreamer SDK by path, set both `GCS_ALLOW_EXTERNAL_GSTREAMER=ON` and `GCS_EXTERNAL_GSTREAMER_ROOT=<path>`.
-- To use a system GStreamer SDK, set `GCS_USE_SYSTEM_GSTREAMER=ON`. CMake searches `GSTREAMER_*` roots, `gst-inspect-1.0` in `PATH`, `pkg-config`, and standard OS install locations.
-- At runtime, [GstVideoReceiver.cpp](Modules/Video/Src/GstVideoReceiver.cpp) looks for sibling folders like `gstreamer-1.0`, `gio/modules`, `gstreamer-runtime`, and `gstreamer-tools`, then exports `GST_PLUGIN_PATH`, `GIO_EXTRA_MODULES`, `GST_PLUGIN_SCANNER`, and `PATH` before calling `gst_init_check()`.
+- To use a system GStreamer SDK, set `GCS_USE_SYSTEM_GSTREAMER=ON`. CMake searches `GSTREAMER_*` roots, `gst-inspect-1.0` in `PATH`, `pkg-config`, and standard OS install locations, then verifies that the SDK is complete and version-compatible.
+- At runtime, [GstVideoReceiver.cpp](Modules/Video/Src/GstVideoReceiver.cpp) looks for sibling folders like `gstreamer-1.0`, `gio/modules`, `gstreamer-runtime`, and `gstreamer-tools`, then sets process-local `GST_PLUGIN_PATH`, `GIO_EXTRA_MODULES`, `GST_PLUGIN_SCANNER`, and `PATH` before calling `gst_init_check()`. CMake does not write those paths into the user or system environment.
 
 GStreamer source options:
 
@@ -74,12 +73,13 @@ GStreamer source options:
 - Explicit SDK path: set `GCS_ALLOW_EXTERNAL_GSTREAMER=ON` and `GCS_EXTERNAL_GSTREAMER_ROOT=<path>`.
 - System SDK: set `GCS_USE_SYSTEM_GSTREAMER=ON`.
 - The force-download option cannot be combined with explicit or system GStreamer modes.
+- Required plugins are always verified during configure with `gst-inspect-1.0`.
 - CMake does not add the managed SDK `bin` directory to the user or system `PATH`.
 
 Using an external GStreamer SDK:
 
 ```bash
-cmake --preset windows-debug-gstreamer ^
+cmake --preset windows-debug ^
   -DGCS_ALLOW_EXTERNAL_GSTREAMER=ON ^
   -DGCS_EXTERNAL_GSTREAMER_ROOT=C:/gstreamer/1.0/msvc_x86_64
 ```
@@ -89,11 +89,11 @@ The external SDK must contain matching development files, runtime tools, and plu
 How GStreamer files are staged:
 
 - Qt itself is downloaded automatically.
-- GStreamer is bootstrapped by [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake) when `GCS_GSTREAMER_MODE=ON` and `GCS_FETCH_GSTREAMER=ON`.
+- GStreamer is bootstrapped by [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake) when the managed SDK is selected and `GCS_FETCH_GSTREAMER=ON`.
 - On Windows, CMake downloads the official GStreamer MSVC SDK installer into `External/GStreamer` and installs it silently into a project-local prefix.
 - On macOS, CMake downloads the official runtime and development `.pkg` files and merges them into `External/GStreamer`.
 - On Linux, CMake no longer falls back to `/usr` unless `GCS_USE_SYSTEM_GSTREAMER=ON`. Put a complete SDK under the managed root reported by CMake, use an explicit root, or opt into system discovery.
-- When GStreamer is enabled, CMake queries `pkg-config` for `pluginsdir`, `pluginscannerdir`, `giomoduledir`, and related paths.
+- CMake queries `pkg-config` for `pluginsdir`, `pluginscannerdir`, `giomoduledir`, and related paths.
 - On Windows, those directories are copied next to the built app, because local `.exe` execution usually needs nearby DLLs, plugins, and the plugin scanner.
 - On macOS and Linux, stale bundled GStreamer folders are removed so the selected SDK/runtime root is used consistently.
 

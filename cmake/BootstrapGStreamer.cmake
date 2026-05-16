@@ -1,11 +1,10 @@
 include_guard(GLOBAL)
 
-option(GCS_FETCH_GSTREAMER "Automatically download a GStreamer SDK when GStreamer support is required." ON)
+option(GCS_FETCH_GSTREAMER "Automatically download the managed GStreamer SDK when it is missing." ON)
 option(GCS_GSTREAMER_FORCE_DOWNLOAD "Refresh the managed GStreamer SDK; cannot be combined with external/system GStreamer." OFF)
 option(GCS_ALLOW_EXTERNAL_GSTREAMER "Allow an explicitly provided GStreamer SDK instead of the managed SDK." OFF)
 option(GCS_USE_SYSTEM_GSTREAMER "Allow GStreamer discovery from common system environment variables and PATH." OFF)
 option(GCS_GSTREAMER_REQUIRE_CHECKSUM "Fail if an auto-downloaded GStreamer package has no pinned checksum." OFF)
-option(GCS_VERIFY_GSTREAMER_PLUGINS "Verify required GStreamer plugins and their versions during configure." ON)
 
 set(GCS_GSTREAMER_VERSION "1.28.1" CACHE STRING
     "GStreamer SDK version expected for the selected Qt version."
@@ -52,7 +51,7 @@ function(gcs_gst_expected_version_for_qt qt_version output_var)
     else()
         message(FATAL_ERROR
             "No verified GStreamer compatibility mapping is defined for Qt ${qt_version}. "
-            "Add the Qt/GStreamer pair to cmake/BootstrapGStreamer.cmake before enabling GStreamer."
+            "Add the Qt/GStreamer pair to cmake/BootstrapGStreamer.cmake before configuring the project."
         )
     endif()
 endfunction()
@@ -321,7 +320,7 @@ function(gcs_gst_root_complete root_dir output_var)
         endif()
     endif()
 
-    if(_is_complete AND GCS_VERIFY_GSTREAMER_PLUGINS)
+    if(_is_complete)
         if(WIN32)
             set(_gst_inspect_name "gst-inspect-1.0.exe")
         else()
@@ -710,10 +709,6 @@ function(gcs_verify_gstreamer_pkg_config_paths)
 endfunction()
 
 function(gcs_verify_gstreamer_plugins)
-    if(NOT GCS_VERIFY_GSTREAMER_PLUGINS)
-        return()
-    endif()
-
     if(NOT GCS_GSTREAMER_ROOT)
         message(FATAL_ERROR "Cannot verify GStreamer plugins without GCS_GSTREAMER_ROOT.")
     endif()
@@ -798,17 +793,7 @@ function(gcs_verify_gstreamer_plugins)
 endfunction()
 
 function(gcs_bootstrap_gstreamer)
-    if(GCS_GSTREAMER_MODE STREQUAL "OFF")
-        set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
-        return()
-    endif()
-
     gcs_gst_resolve_version_for_qt()
-
-    set(_is_required FALSE)
-    if(GCS_GSTREAMER_MODE STREQUAL "ON")
-        set(_is_required TRUE)
-    endif()
 
     if(GCS_GSTREAMER_FORCE_DOWNLOAD AND (GCS_ALLOW_EXTERNAL_GSTREAMER OR GCS_USE_SYSTEM_GSTREAMER))
         message(FATAL_ERROR
@@ -882,7 +867,7 @@ function(gcs_bootstrap_gstreamer)
         return()
     endif()
 
-    if(_is_required AND GCS_FETCH_GSTREAMER)
+    if(GCS_FETCH_GSTREAMER)
         if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
             gcs_gst_download_windows_sdk(_downloaded_root)
             gcs_gst_apply_root("${_downloaded_root}")
@@ -899,21 +884,17 @@ function(gcs_bootstrap_gstreamer)
             message(FATAL_ERROR
                 "Automatic GStreamer SDK download is not available on Linux. "
                 "Place a complete GStreamer ${GCS_GSTREAMER_VERSION} SDK at ${_managed_root}, "
-                "or set GCS_ALLOW_EXTERNAL_GSTREAMER=ON and GCS_EXTERNAL_GSTREAMER_ROOT=<path>."
+                "set GCS_ALLOW_EXTERNAL_GSTREAMER=ON and GCS_EXTERNAL_GSTREAMER_ROOT=<path>, "
+                "or set GCS_USE_SYSTEM_GSTREAMER=ON to use a complete matching system SDK."
             )
         endif()
     endif()
 
     set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
-    if(_is_required)
-        message(FATAL_ERROR
-            "GStreamer receiver support was requested, but the managed GStreamer "
-            "${GCS_GSTREAMER_VERSION} SDK was not found at ${_managed_root}."
-        )
-    endif()
-
-    message(STATUS
-        "No managed GStreamer ${GCS_GSTREAMER_VERSION} SDK found at ${_managed_root}; "
-        "building without video receiver."
+    message(FATAL_ERROR
+        "GStreamer is required, but the managed GStreamer ${GCS_GSTREAMER_VERSION} SDK "
+        "was not found at ${_managed_root}. Enable GCS_FETCH_GSTREAMER, provide "
+        "GCS_EXTERNAL_GSTREAMER_ROOT with GCS_ALLOW_EXTERNAL_GSTREAMER=ON, or set "
+        "GCS_USE_SYSTEM_GSTREAMER=ON to use a complete matching system SDK."
     )
 endfunction()

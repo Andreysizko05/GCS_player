@@ -1,12 +1,10 @@
 #include "MainWindow.h"
 #include "./ui_MainWindow.h"
 
-#ifdef GCS_ENABLE_GSTREAMER
 #include "GstVideoReceiver.h"
 
 #include <QtMultimedia/QVideoSink>
 #include <QtMultimediaWidgets/QVideoWidget>
-#endif
 
 MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
     : QMainWindow(parent)
@@ -17,7 +15,6 @@ MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
     ui->videoFrameLabel->setScaledContents(false);
     ui->videoFrameLabel->setAlignment(Qt::AlignCenter);
 
-#ifdef GCS_ENABLE_GSTREAMER
     if (startVideoReceiver) {
         mVideoWidget = new QVideoWidget(ui->centralwidget);
         mVideoWidget->setObjectName(QStringLiteral("videoFrameSinkWidget"));
@@ -33,21 +30,15 @@ MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
         connect(mVideoReceiver, &GstVideoReceiver::receiverError, this, &MainWindow::onVideoReceiverError);
         mVideoReceiver->start();
     }
-#else
-    Q_UNUSED(startVideoReceiver)
-    ui->videoFrameLabel->setText(QStringLiteral("GStreamer support is disabled.\nUse a *-gstreamer preset to enable video."));
-#endif
 }
 
 MainWindow::~MainWindow()
 {
-#ifdef GCS_ENABLE_GSTREAMER
     if (mVideoReceiver != nullptr)
     {
         mVideoReceiver->stop();
         mVideoReceiver->wait();
     }
-#endif
 
     delete ui;
 }
@@ -97,15 +88,13 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 
 QWidget* MainWindow::videoSurfaceWidget() const
 {
-#ifdef GCS_ENABLE_GSTREAMER
     if (mVideoWidget != nullptr) {
         return mVideoWidget;
     }
-#endif
+
     return ui->videoFrameLabel;
 }
 
-#ifdef GCS_ENABLE_GSTREAMER
 void MainWindow::onVideoFrameReady(const QVideoFrame& frame)
 {
     if (mVideoWidget == nullptr || mVideoWidget->videoSink() == nullptr || !frame.isValid()) {
@@ -124,4 +113,3 @@ void MainWindow::onVideoReceiverError(const QString& message)
 {
     ui->statusbar->showMessage(message, 5000);
 }
-#endif

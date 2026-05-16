@@ -11,8 +11,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH ON)
-set(GCS_GSTREAMER_MODE "AUTO" CACHE STRING "Controls video receiver support: AUTO, ON, or OFF.")
-set_property(CACHE GCS_GSTREAMER_MODE PROPERTY STRINGS AUTO ON OFF)
 
 set(GCS_CORE_INC_DIR "${PROJECT_SOURCE_DIR}/Core/Inc")
 set(GCS_CORE_SRC_DIR "${PROJECT_SOURCE_DIR}/Core/Src")
@@ -22,77 +20,37 @@ set(GCS_VIDEO_MODULE_SRC_DIR "${PROJECT_SOURCE_DIR}/Modules/Video/Src")
 include(cmake/BootstrapQt.cmake)
 include(cmake/BootstrapGStreamer.cmake)
 
-string(TOUPPER "${GCS_GSTREAMER_MODE}" GCS_GSTREAMER_MODE)
+gcs_bootstrap_gstreamer()
 
-if(NOT GCS_GSTREAMER_MODE STREQUAL "OFF")
-    gcs_bootstrap_gstreamer()
-endif()
+find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools Multimedia MultimediaWidgets)
+find_package(PkgConfig REQUIRED)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
-find_package(PkgConfig QUIET)
-
-set(GCS_ENABLE_GSTREAMER OFF)
-
-if(GCS_GSTREAMER_MODE STREQUAL "OFF")
-    message(STATUS "GStreamer receiver support is disabled by configuration")
-elseif(PkgConfig_FOUND AND GCS_GSTREAMER_ROOT)
-    pkg_check_modules(GSTREAMER IMPORTED_TARGET QUIET
-        "gstreamer-1.0 = ${GCS_GSTREAMER_VERSION}"
-        "gstreamer-app-1.0 = ${GCS_GSTREAMER_VERSION}"
-        "gstreamer-video-1.0 = ${GCS_GSTREAMER_VERSION}"
-    )
-    if(TARGET PkgConfig::GSTREAMER)
-        gcs_verify_gstreamer_pkg_config_paths()
-        gcs_verify_gstreamer_plugins()
-        set(GCS_ENABLE_GSTREAMER ON)
-        message(STATUS
-            "GStreamer receiver support is enabled with ${GCS_GSTREAMER_VERSION} "
-            "from ${GCS_GSTREAMER_ROOT}"
-        )
-    elseif(GCS_GSTREAMER_MODE STREQUAL "ON")
-        message(FATAL_ERROR
-            "GStreamer receiver support was requested, but the required development files "
-            "for GStreamer ${GCS_GSTREAMER_VERSION} were not found under ${GCS_GSTREAMER_ROOT}."
-        )
-    else()
-        message(STATUS
-            "Managed GStreamer ${GCS_GSTREAMER_VERSION} development files were not found, "
-            "building without video receiver"
-        )
-    endif()
-elseif(GCS_GSTREAMER_MODE STREQUAL "ON")
-    if(NOT GCS_GSTREAMER_ROOT)
-        message(FATAL_ERROR
-            "GStreamer receiver support was requested, but no managed, external, or system "
-            "GStreamer root was selected."
-        )
-    else()
-        message(FATAL_ERROR "GStreamer receiver support was requested, but pkg-config is unavailable.")
-    endif()
-else()
-    message(STATUS
-        "No managed, external, or system GStreamer root was selected, "
-        "building without video receiver"
+if(NOT GCS_GSTREAMER_ROOT)
+    message(FATAL_ERROR
+        "GStreamer is required, but no managed, external, or system GStreamer root was selected."
     )
 endif()
 
-if(GCS_ENABLE_GSTREAMER)
-    find_package(Qt6 REQUIRED COMPONENTS Multimedia MultimediaWidgets)
-endif()
+pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
+    "gstreamer-1.0 = ${GCS_GSTREAMER_VERSION}"
+    "gstreamer-app-1.0 = ${GCS_GSTREAMER_VERSION}"
+    "gstreamer-video-1.0 = ${GCS_GSTREAMER_VERSION}"
+)
+gcs_verify_gstreamer_pkg_config_paths()
+gcs_verify_gstreamer_plugins()
+message(STATUS
+    "GStreamer is required and enabled with ${GCS_GSTREAMER_VERSION} "
+    "from ${GCS_GSTREAMER_ROOT}"
+)
 
 set(GCS_PLAYER_SOURCES
     "${GCS_CORE_SRC_DIR}/main.cpp"
     "${GCS_CORE_SRC_DIR}/MainWindow.cpp"
     "${GCS_CORE_INC_DIR}/MainWindow.h"
     "${GCS_CORE_SRC_DIR}/MainWindow.ui"
+    "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
+    "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoReceiver.h"
 )
-
-if(GCS_ENABLE_GSTREAMER)
-    list(APPEND GCS_PLAYER_SOURCES
-        "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
-        "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoReceiver.h"
-    )
-endif()
 
 qt_standard_project_setup(I18N_TRANSLATED_LANGUAGES uk_UA)
 
@@ -108,25 +66,19 @@ qt_add_translations(GCS_player
 
 target_include_directories(GCS_player PRIVATE
     "${GCS_CORE_INC_DIR}"
+    "${GCS_VIDEO_MODULE_INC_DIR}"
 )
 
-target_link_libraries(GCS_player PRIVATE Qt6::Widgets)
+target_link_libraries(GCS_player PRIVATE
+    Qt6::Widgets
+    Qt6::Multimedia
+    Qt6::MultimediaWidgets
+    PkgConfig::GSTREAMER
+)
 
-if(GCS_ENABLE_GSTREAMER)
-    target_include_directories(GCS_player PRIVATE
-        "${GCS_VIDEO_MODULE_INC_DIR}"
-    )
-    target_link_libraries(GCS_player PRIVATE
-        Qt6::Multimedia
-        Qt6::MultimediaWidgets
-        PkgConfig::GSTREAMER
-    )
-    target_compile_definitions(GCS_player PRIVATE GCS_ENABLE_GSTREAMER=1)
-
-    if(NOT WIN32 AND GSTREAMER_LIBRARY_DIRS)
-        set_property(TARGET GCS_player APPEND PROPERTY BUILD_RPATH "${GSTREAMER_LIBRARY_DIRS}")
-        set_property(TARGET GCS_player APPEND PROPERTY INSTALL_RPATH "${GSTREAMER_LIBRARY_DIRS}")
-    endif()
+if(NOT WIN32 AND GSTREAMER_LIBRARY_DIRS)
+    set_property(TARGET GCS_player APPEND PROPERTY BUILD_RPATH "${GSTREAMER_LIBRARY_DIRS}")
+    set_property(TARGET GCS_player APPEND PROPERTY INSTALL_RPATH "${GSTREAMER_LIBRARY_DIRS}")
 endif()
 
 set_target_properties(GCS_player PROPERTIES
@@ -170,7 +122,7 @@ function(gcs_install_directory_if_exists source_dir destination_subdir)
     )
 endfunction()
 
-if(GCS_ENABLE_GSTREAMER AND PkgConfig_FOUND)
+if(PkgConfig_FOUND)
     pkg_get_variable(GCS_GST_PLUGIN_DIR gstreamer-1.0 pluginsdir)
     pkg_get_variable(GCS_GST_TOOLS_DIR gstreamer-1.0 toolsdir)
     pkg_get_variable(GCS_GST_PLUGIN_SCANNER_DIR gstreamer-1.0 pluginscannerdir)
@@ -257,7 +209,7 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:GCS_player>/plugins"
             COMMENT "Normalizing Qt plugin lookup for local Windows execution"
         )
-        if(GCS_ENABLE_GSTREAMER AND GCS_GST_RUNTIME_DIR AND EXISTS "${GCS_GST_RUNTIME_DIR}")
+        if(GCS_GST_RUNTIME_DIR AND EXISTS "${GCS_GST_RUNTIME_DIR}")
             add_custom_command(TARGET GCS_player POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${GCS_GST_RUNTIME_DIR}"
@@ -273,7 +225,7 @@ if(WIN32)
     endif()
 endif()
 
-if(GCS_ENABLE_GSTREAMER AND NOT WIN32)
+if(NOT WIN32)
     if(APPLE)
         install(CODE "
             file(REMOVE_RECURSE
