@@ -2,6 +2,7 @@
 #define GSTVIDEORECEIVER_H
 
 #include <QSize>
+#include <QString>
 #include <QThread>
 
 #include <QtMultimedia/QVideoFrame>
@@ -11,29 +12,42 @@
 
 #include <atomic>
 
-#define GST_VIDEO_RECEIVER_UDP_HOST "0.0.0.0"
-#define GST_VIDEO_RECEIVER_UDP_PORT 5600
-#define GST_VIDEO_RECEIVER_RTP_MEDIA "video"
-#define GST_VIDEO_RECEIVER_RTP_ENCODING "H264"
-#define GST_VIDEO_RECEIVER_RTP_PAYLOAD 96
-#define GST_VIDEO_RECEIVER_RTP_CLOCK_RATE 90000
-#define GST_VIDEO_RECEIVER_JITTER_LATENCY_MS 50
-#define GST_VIDEO_RECEIVER_FRAME_TIMEOUT_MS 3000
-#define GST_VIDEO_RECEIVER_RESTART_DELAY_MS 1000
-#define GST_VIDEO_RECEIVER_APPSINK_MAX_BUFFERS 1
-#define GST_VIDEO_RECEIVER_APPSINK_FORMAT "BGRA"
-#define GST_VIDEO_RECEIVER_PLACEHOLDER_WIDTH 1280
-#define GST_VIDEO_RECEIVER_PLACEHOLDER_HEIGHT 720
-
 class GstVideoReceiver : public QThread
 {
     Q_OBJECT
 
 public:
+    enum class Transport {
+        UdpRtp,
+        UdpMpegTs
+    };
+
+    enum class Codec {
+        H264,
+        H265
+    };
+
+    struct StreamSettings {
+        Transport transport = Transport::UdpRtp;
+        Codec codec = Codec::H264;
+        QString udpHost = QStringLiteral("0.0.0.0");
+        quint16 udpPort = 5600;
+        bool lowLatency = false;
+        int rtpPayload = 96;
+        int rtpClockRate = 90000;
+        int jitterLatencyMs = 50;
+        int frameTimeoutMs = 3000;
+        int restartDelayMs = 1000;
+        int appSinkMaxBuffers = 1;
+        QString appSinkFormat = QStringLiteral("BGRA");
+    };
+
     explicit GstVideoReceiver(QObject* parent = nullptr);
+    explicit GstVideoReceiver(const StreamSettings& settings, QObject* parent = nullptr);
     ~GstVideoReceiver() override;
 
     void stop();
+    StreamSettings streamSettings() const;
 
 signals:
     void frameReady(const QVideoFrame& frame);
@@ -51,8 +65,10 @@ private:
     GstFlowReturn processSample(GstAppSink* sink);
 
     static GstFlowReturn onNewSample(GstAppSink* sink, gpointer userData);
+    static void onTsDemuxPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
     static void onDecoderPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
 
+    StreamSettings m_settings;
     std::atomic_bool m_stopRequested{false};
     std::atomic_bool m_seenFrame{false};
     std::atomic<qint64> m_lastFrameTimestampMs{0};
@@ -64,6 +80,7 @@ private:
     GstElement* m_jitterBuffer = nullptr;
     GstElement* m_depayloader = nullptr;
     GstElement* m_parser = nullptr;
+    GstElement* m_tsDemux = nullptr;
     GstElement* m_decodeQueue = nullptr;
     GstElement* m_decoder = nullptr;
     GstElement* m_videoConvert = nullptr;

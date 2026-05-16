@@ -17,6 +17,48 @@
 
 namespace
 {
+constexpr int kPlaceholderWidth = 1280;
+constexpr int kPlaceholderHeight = 720;
+
+QString transportName(GstVideoReceiver::Transport transport)
+{
+    switch (transport) {
+    case GstVideoReceiver::Transport::UdpRtp:
+        return QStringLiteral("UDP/RTP");
+    case GstVideoReceiver::Transport::UdpMpegTs:
+        return QStringLiteral("UDP/MPEG-TS");
+    }
+
+    return QStringLiteral("UDP");
+}
+
+QString codecName(GstVideoReceiver::Codec codec)
+{
+    switch (codec) {
+    case GstVideoReceiver::Codec::H264:
+        return QStringLiteral("H.264");
+    case GstVideoReceiver::Codec::H265:
+        return QStringLiteral("H.265");
+    }
+
+    return QStringLiteral("video");
+}
+
+const char* rtpEncodingName(GstVideoReceiver::Codec codec)
+{
+    return codec == GstVideoReceiver::Codec::H265 ? "H265" : "H264";
+}
+
+const char* depayloaderFactory(GstVideoReceiver::Codec codec)
+{
+    return codec == GstVideoReceiver::Codec::H265 ? "rtph265depay" : "rtph264depay";
+}
+
+const char* parserFactory(GstVideoReceiver::Codec codec)
+{
+    return codec == GstVideoReceiver::Codec::H265 ? "h265parse" : "h264parse";
+}
+
 QVideoFrame imageToVideoFrame(const QImage& image)
 {
     const QImage source = image.convertToFormat(QImage::Format_ARGB32);
@@ -31,8 +73,8 @@ QString createMessageText(const QString& line)
 QVideoFrame makePlaceholderFrame(const QString& text)
 {
     QImage image(
-        GST_VIDEO_RECEIVER_PLACEHOLDER_WIDTH,
-        GST_VIDEO_RECEIVER_PLACEHOLDER_HEIGHT,
+        kPlaceholderWidth,
+        kPlaceholderHeight,
         QImage::Format_RGB32
     );
     image.fill(QColor(10, 14, 18));
@@ -169,7 +211,13 @@ bool ensureGStreamerInitialized(QString& errorMessage)
 } // namespace
 
 GstVideoReceiver::GstVideoReceiver(QObject* parent)
+    : GstVideoReceiver(StreamSettings(), parent)
+{
+}
+
+GstVideoReceiver::GstVideoReceiver(const StreamSettings& settings, QObject* parent)
     : QThread(parent)
+    , m_settings(settings)
 {
     qRegisterMetaType<QVideoFrame>("QVideoFrame");
 }
@@ -185,6 +233,11 @@ void GstVideoReceiver::stop()
     m_stopRequested.store(true, std::memory_order_relaxed);
 }
 
+GstVideoReceiver::StreamSettings GstVideoReceiver::streamSettings() const
+{
+    return m_settings;
+}
+
 void GstVideoReceiver::run()
 {
     QString initError;
@@ -195,10 +248,15 @@ void GstVideoReceiver::run()
         return;
     }
 
+    const QString videoDescription = m_settings.transport == Transport::UdpMpegTs
+        ? QStringLiteral("%1 video, codec auto-detected").arg(transportName(m_settings.transport))
+        : QStringLiteral("%1/%2 video").arg(transportName(m_settings.transport), codecName(m_settings.codec));
+
     emit frameReady(makePlaceholderFrame(
-        QStringLiteral("Listening on UDP %1 for RTP/%2 video.")
-            .arg(GST_VIDEO_RECEIVER_UDP_PORT)
-            .arg(QStringLiteral(GST_VIDEO_RECEIVER_RTP_ENCODING))
+        QStringLiteral("Listening on %1:%2 for %3.")
+            .arg(m_settings.udpHost)
+            .arg(m_settings.udpPort)
+            .arg(videoDescription)
     ));
 
     while (!m_stopRequested.load(std::memory_order_relaxed)) {
@@ -212,7 +270,7 @@ void GstVideoReceiver::run()
             emit frameReady(makePlaceholderFrame(
                 QStringLiteral("Unable to create the GStreamer pipeline. Retrying...")
             ));
-            msleep(GST_VIDEO_RECEIVER_RESTART_DELAY_MS);
+            msleep(static_cast<unsigned long>(m_settings.restartDelayMs));
             continue;
         }
 
@@ -223,7 +281,7 @@ void GstVideoReceiver::run()
             const qint64 lastFrameMs = m_lastFrameTimestampMs.load(std::memory_order_relaxed);
             if (lastFrameMs > 0) {
                 const qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - lastFrameMs;
-                if (elapsedMs > GST_VIDEO_RECEIVER_FRAME_TIMEOUT_MS) {
+                if (elapsedMs > m_settings.frameTimeoutMs) {
                     keepRunning = false;
                     emit receiverError(QStringLiteral(
                         "Video timeout: no frames received for %1 ms. Restarting pipeline."
@@ -238,7 +296,7 @@ void GstVideoReceiver::run()
             emit frameReady(makePlaceholderFrame(
                 QStringLiteral("Video stream lost. Reconnecting...")
             ));
-            msleep(GST_VIDEO_RECEIVER_RESTART_DELAY_MS);
+            msleep(static_cast<unsigned long>(m_settings.restartDelayMs));
         }
     }
 
@@ -255,11 +313,19 @@ bool GstVideoReceiver::createPipeline()
     m_lastFrameWidth.store(0, std::memory_order_relaxed);
     m_lastFrameHeight.store(0, std::memory_order_relaxed);
 
+    const bool useRtp = m_settings.transport == Transport::UdpRtp;
+
     m_pipeline = gst_pipeline_new("gcs-player-video-pipeline");
     m_udpSource = gst_element_factory_make("udpsrc", "udp-source");
-    m_jitterBuffer = gst_element_factory_make("rtpjitterbuffer", "rtp-jitter-buffer");
-    m_depayloader = gst_element_factory_make("rtph264depay", "rtp-h264-depay");
-    m_parser = gst_element_factory_make("h264parse", "h264-parser");
+    if (useRtp) {
+        if (!m_settings.lowLatency) {
+            m_jitterBuffer = gst_element_factory_make("rtpjitterbuffer", "rtp-jitter-buffer");
+        }
+        m_depayloader = gst_element_factory_make(depayloaderFactory(m_settings.codec), "rtp-depay");
+        m_parser = gst_element_factory_make(parserFactory(m_settings.codec), "video-parser");
+    } else {
+        m_tsDemux = gst_element_factory_make("tsdemux", "mpeg-ts-demux");
+    }
     m_decodeQueue = gst_element_factory_make("queue", "decode-queue");
     m_decoder = gst_element_factory_make("decodebin3", "video-decoder");
     if (m_decoder == nullptr) {
@@ -278,9 +344,15 @@ bool GstVideoReceiver::createPipeline()
 
     trackMissingElement(m_pipeline, QStringLiteral("pipeline"));
     trackMissingElement(m_udpSource, QStringLiteral("udpsrc"));
-    trackMissingElement(m_jitterBuffer, QStringLiteral("rtpjitterbuffer"));
-    trackMissingElement(m_depayloader, QStringLiteral("rtph264depay"));
-    trackMissingElement(m_parser, QStringLiteral("h264parse"));
+    if (useRtp) {
+        if (!m_settings.lowLatency) {
+            trackMissingElement(m_jitterBuffer, QStringLiteral("rtpjitterbuffer"));
+        }
+        trackMissingElement(m_depayloader, QString::fromUtf8(depayloaderFactory(m_settings.codec)));
+        trackMissingElement(m_parser, QString::fromUtf8(parserFactory(m_settings.codec)));
+    } else {
+        trackMissingElement(m_tsDemux, QStringLiteral("tsdemux"));
+    }
     trackMissingElement(m_decodeQueue, QStringLiteral("queue"));
     trackMissingElement(m_decoder, QStringLiteral("decodebin3/decodebin"));
     trackMissingElement(m_videoConvert, QStringLiteral("videoconvert"));
@@ -294,39 +366,50 @@ bool GstVideoReceiver::createPipeline()
         return false;
     }
 
-    GstCaps* udpCaps = gst_caps_new_simple(
-        "application/x-rtp",
-        "media", G_TYPE_STRING, GST_VIDEO_RECEIVER_RTP_MEDIA,
-        "encoding-name", G_TYPE_STRING, GST_VIDEO_RECEIVER_RTP_ENCODING,
-        "payload", G_TYPE_INT, GST_VIDEO_RECEIVER_RTP_PAYLOAD,
-        "clock-rate", G_TYPE_INT, GST_VIDEO_RECEIVER_RTP_CLOCK_RATE,
-        nullptr
-    );
+    GstCaps* udpCaps = nullptr;
+    if (useRtp) {
+        udpCaps = gst_caps_new_simple(
+            "application/x-rtp",
+            "media", G_TYPE_STRING, "video",
+            "encoding-name", G_TYPE_STRING, rtpEncodingName(m_settings.codec),
+            "payload", G_TYPE_INT, m_settings.rtpPayload,
+            "clock-rate", G_TYPE_INT, m_settings.rtpClockRate,
+            nullptr
+        );
+    }
 
+    const QByteArray appSinkFormat = m_settings.appSinkFormat.toUtf8();
     GstCaps* sinkCaps = gst_caps_new_simple(
         "video/x-raw",
-        "format", G_TYPE_STRING, GST_VIDEO_RECEIVER_APPSINK_FORMAT,
+        "format", G_TYPE_STRING, appSinkFormat.constData(),
         nullptr
     );
 
+    const QByteArray udpHost = m_settings.udpHost.toUtf8();
     g_object_set(
         m_udpSource,
-        "address", GST_VIDEO_RECEIVER_UDP_HOST,
-        "port", GST_VIDEO_RECEIVER_UDP_PORT,
-        "caps", udpCaps,
+        "address", udpHost.constData(),
+        "port", static_cast<int>(m_settings.udpPort),
         nullptr
     );
-    g_object_set(
-        m_jitterBuffer,
-        "latency", GST_VIDEO_RECEIVER_JITTER_LATENCY_MS,
-        "drop-on-latency", TRUE,
-        nullptr
-    );
-    g_object_set(m_parser, "config-interval", 1, nullptr);
+    if (udpCaps != nullptr) {
+        g_object_set(m_udpSource, "caps", udpCaps, nullptr);
+    }
+    if (m_jitterBuffer != nullptr) {
+        g_object_set(
+            m_jitterBuffer,
+            "latency", m_settings.jitterLatencyMs,
+            "drop-on-latency", TRUE,
+            nullptr
+        );
+    }
+    if (m_parser != nullptr) {
+        g_object_set(m_parser, "config-interval", 1, nullptr);
+    }
     g_object_set(
         m_appSink,
         "emit-signals", TRUE,
-        "max-buffers", GST_VIDEO_RECEIVER_APPSINK_MAX_BUFFERS,
+        "max-buffers", m_settings.appSinkMaxBuffers,
         "drop", TRUE,
         "sync", FALSE,
         "enable-last-sample", FALSE,
@@ -334,38 +417,76 @@ bool GstVideoReceiver::createPipeline()
     );
     g_object_set(m_videoCapsFilter, "caps", sinkCaps, nullptr);
 
-    gst_caps_unref(udpCaps);
+    if (udpCaps != nullptr) {
+        gst_caps_unref(udpCaps);
+    }
     gst_caps_unref(sinkCaps);
 
+    if (m_tsDemux != nullptr) {
+        g_signal_connect(m_tsDemux, "pad-added", G_CALLBACK(onTsDemuxPadAdded), this);
+    }
     g_signal_connect(m_decoder, "pad-added", G_CALLBACK(onDecoderPadAdded), this);
     g_signal_connect(m_appSink, "new-sample", G_CALLBACK(onNewSample), this);
 
-    gst_bin_add_many(
-        GST_BIN(m_pipeline),
-        m_udpSource,
-        m_jitterBuffer,
-        m_depayloader,
-        m_parser,
-        m_decodeQueue,
-        m_decoder,
-        m_videoConvert,
-        m_videoCapsFilter,
-        m_appSink,
-        nullptr
-    );
-
-    if (!gst_element_link_many(
+    if (useRtp) {
+        gst_bin_add_many(
+            GST_BIN(m_pipeline),
             m_udpSource,
-            m_jitterBuffer,
             m_depayloader,
             m_parser,
             m_decodeQueue,
             m_decoder,
-            nullptr))
-    {
-        emit receiverError(QStringLiteral("Unable to link the RTP receive chain."));
-        destroyPipeline();
-        return false;
+            m_videoConvert,
+            m_videoCapsFilter,
+            m_appSink,
+            nullptr
+        );
+        if (m_jitterBuffer != nullptr) {
+            gst_bin_add(GST_BIN(m_pipeline), m_jitterBuffer);
+        }
+
+        const gboolean receiveChainLinked = m_jitterBuffer != nullptr
+            ? gst_element_link_many(
+                m_udpSource,
+                m_jitterBuffer,
+                m_depayloader,
+                m_parser,
+                m_decodeQueue,
+                m_decoder,
+                nullptr)
+            : gst_element_link_many(
+                m_udpSource,
+                m_depayloader,
+                m_parser,
+                m_decodeQueue,
+                m_decoder,
+                nullptr);
+
+        if (!receiveChainLinked) {
+            emit receiverError(QStringLiteral("Unable to link the RTP receive chain."));
+            destroyPipeline();
+            return false;
+        }
+    } else {
+        gst_bin_add_many(
+            GST_BIN(m_pipeline),
+            m_udpSource,
+            m_tsDemux,
+            m_decodeQueue,
+            m_decoder,
+            m_videoConvert,
+            m_videoCapsFilter,
+            m_appSink,
+            nullptr
+        );
+
+        if (!gst_element_link(m_udpSource, m_tsDemux)
+            || !gst_element_link_many(m_decodeQueue, m_decoder, nullptr))
+        {
+            emit receiverError(QStringLiteral("Unable to link the MPEG-TS receive chain."));
+            destroyPipeline();
+            return false;
+        }
     }
 
     if (!gst_element_link_many(m_videoConvert, m_videoCapsFilter, m_appSink, nullptr)) {
@@ -410,6 +531,7 @@ void GstVideoReceiver::destroyPipeline()
     m_jitterBuffer = nullptr;
     m_depayloader = nullptr;
     m_parser = nullptr;
+    m_tsDemux = nullptr;
     m_decodeQueue = nullptr;
     m_decoder = nullptr;
     m_videoConvert = nullptr;
@@ -588,6 +710,49 @@ GstFlowReturn GstVideoReceiver::onNewSample(GstAppSink* sink, gpointer userData)
 {
     auto* self = static_cast<GstVideoReceiver*>(userData);
     return self != nullptr ? self->processSample(sink) : GST_FLOW_ERROR;
+}
+
+void GstVideoReceiver::onTsDemuxPadAdded(GstElement* src, GstPad* newPad, gpointer userData)
+{
+    Q_UNUSED(src)
+
+    auto* self = static_cast<GstVideoReceiver*>(userData);
+    if (self == nullptr || self->m_decodeQueue == nullptr) {
+        return;
+    }
+
+    GstCaps* caps = gst_pad_get_current_caps(newPad);
+    if (caps == nullptr) {
+        caps = gst_pad_query_caps(newPad, nullptr);
+    }
+    if (caps == nullptr) {
+        return;
+    }
+
+    const GstStructure* structure = gst_caps_get_structure(caps, 0);
+    const gchar* name = structure != nullptr ? gst_structure_get_name(structure) : nullptr;
+    const bool isVideoPad = name != nullptr && g_str_has_prefix(name, "video/");
+    gst_caps_unref(caps);
+
+    if (!isVideoPad) {
+        return;
+    }
+
+    GstPad* sinkPad = gst_element_get_static_pad(self->m_decodeQueue, "sink");
+    if (sinkPad == nullptr) {
+        return;
+    }
+
+    if (gst_pad_is_linked(sinkPad)) {
+        gst_object_unref(sinkPad);
+        return;
+    }
+
+    if (gst_pad_link(newPad, sinkPad) != GST_PAD_LINK_OK) {
+        emit self->receiverError(QStringLiteral("Unable to link the MPEG-TS video stream to the decoder."));
+    }
+
+    gst_object_unref(sinkPad);
 }
 
 void GstVideoReceiver::onDecoderPadAdded(GstElement* src, GstPad* newPad, gpointer userData)
