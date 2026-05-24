@@ -2,6 +2,7 @@
 #include "./ui_MainWindow.h"
 
 #include "GstVideoReceiver.h"
+#include "VideoSettingsConfig.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -13,6 +14,70 @@
 #include <QtMultimedia/QVideoSink>
 #include <QtMultimediaWidgets/QVideoWidget>
 
+namespace
+{
+int containerIndexFromTransport(GstVideoReceiver::Transport transport)
+{
+    switch (transport) {
+    case GstVideoReceiver::Transport::UdpMpegTs:
+        return 1;
+    case GstVideoReceiver::Transport::UdpRtp:
+        return 0;
+    }
+
+    return 0;
+}
+
+GstVideoReceiver::Transport transportFromContainerIndex(int index)
+{
+    return index == 1
+        ? GstVideoReceiver::Transport::UdpMpegTs
+        : GstVideoReceiver::Transport::UdpRtp;
+}
+
+int codecIndexFromCodec(GstVideoReceiver::Codec codec)
+{
+    switch (codec) {
+    case GstVideoReceiver::Codec::H265:
+        return 1;
+    case GstVideoReceiver::Codec::H264:
+        return 0;
+    }
+
+    return 0;
+}
+
+GstVideoReceiver::Codec codecFromCodecIndex(int index)
+{
+    return index == 1
+        ? GstVideoReceiver::Codec::H265
+        : GstVideoReceiver::Codec::H264;
+}
+
+VideoSettingsConfig::Settings videoSettingsFromUi(const Ui::MainWindow* ui)
+{
+    VideoSettingsConfig::Settings settings;
+    settings.transport = transportFromContainerIndex(ui->videoContainerComboBox->currentIndex());
+    settings.codec = codecFromCodecIndex(ui->videoCodecComboBox->currentIndex());
+    settings.bindAddress = ui->videoAddressLineEdit->text().trimmed();
+    if (settings.bindAddress.isEmpty()) {
+        settings.bindAddress = QStringLiteral("0.0.0.0");
+    }
+    settings.port = static_cast<quint16>(ui->videoPortSpinBox->value());
+    settings.lowLatency = ui->lowLatencyCheckBox->isChecked();
+    return settings;
+}
+
+void applyVideoSettingsToUi(Ui::MainWindow* ui, const VideoSettingsConfig::Settings& settings)
+{
+    ui->videoContainerComboBox->setCurrentIndex(containerIndexFromTransport(settings.transport));
+    ui->videoCodecComboBox->setCurrentIndex(codecIndexFromCodec(settings.codec));
+    ui->videoAddressLineEdit->setText(settings.bindAddress);
+    ui->videoPortSpinBox->setValue(settings.port);
+    ui->lowLatencyCheckBox->setChecked(settings.lowLatency);
+}
+} // namespace
+
 MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -22,6 +87,7 @@ MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
     ui->videoFrameLabel->setScaledContents(false);
     ui->videoFrameLabel->setAlignment(Qt::AlignCenter);
     setupVideoSettingsUi();
+    loadVideoSettings();
 
     if (startVideoReceiver) {
         ensureVideoWidget();
@@ -59,6 +125,27 @@ void MainWindow::setupVideoSettingsUi()
     onVideoContainerChanged(ui->videoContainerComboBox->currentIndex());
 }
 
+void MainWindow::loadVideoSettings()
+{
+    const VideoSettingsConfig config;
+    const VideoSettingsConfig::LoadResult result = config.loadOrCreate();
+    applyVideoSettingsToUi(ui, result.settings);
+    onVideoContainerChanged(ui->videoContainerComboBox->currentIndex());
+
+    if (!result.ok) {
+        ui->statusbar->showMessage(
+            QStringLiteral("Unable to load local video settings: %1").arg(result.errorMessage),
+            5000
+        );
+    }
+}
+
+bool MainWindow::saveVideoSettings() const
+{
+    const VideoSettingsConfig config;
+    return config.save(videoSettingsFromUi(ui));
+}
+
 void MainWindow::ensureVideoWidget()
 {
     if (mVideoWidget != nullptr) {
@@ -85,20 +172,15 @@ void MainWindow::restartVideoReceiver()
         mVideoReceiver = nullptr;
     }
 
+    const VideoSettingsConfig::Settings videoSettings = videoSettingsFromUi(ui);
+    ui->videoAddressLineEdit->setText(videoSettings.bindAddress);
+
     GstVideoReceiver::StreamSettings settings;
-    settings.transport = ui->videoContainerComboBox->currentIndex() == 1
-        ? GstVideoReceiver::Transport::UdpMpegTs
-        : GstVideoReceiver::Transport::UdpRtp;
-    settings.codec = ui->videoCodecComboBox->currentIndex() == 1
-        ? GstVideoReceiver::Codec::H265
-        : GstVideoReceiver::Codec::H264;
-    settings.udpHost = ui->videoAddressLineEdit->text().trimmed();
-    if (settings.udpHost.isEmpty()) {
-        settings.udpHost = QStringLiteral("0.0.0.0");
-        ui->videoAddressLineEdit->setText(settings.udpHost);
-    }
-    settings.udpPort = static_cast<quint16>(ui->videoPortSpinBox->value());
-    settings.lowLatency = ui->lowLatencyCheckBox->isChecked();
+    settings.transport = videoSettings.transport;
+    settings.codec = videoSettings.codec;
+    settings.udpHost = videoSettings.bindAddress;
+    settings.udpPort = videoSettings.port;
+    settings.lowLatency = videoSettings.lowLatency;
 
     mVideoSize = QSize();
     ui->detectedResolutionValueLabel->setText(QStringLiteral("Auto"));
@@ -185,6 +267,9 @@ void MainWindow::onVideoFrameReady(const QVideoFrame& frame)
 void MainWindow::applyVideoSettings()
 {
     restartVideoReceiver();
+    if (!saveVideoSettings()) {
+        ui->statusbar->showMessage(QStringLiteral("Unable to save local video settings."), 5000);
+    }
 }
 
 void MainWindow::onVideoContainerChanged(int index)

@@ -45,3 +45,4 @@ vcpkg_installed/
 
 CMakeUserPresets.json
 aqtinstall.log
+video-settings.local.json

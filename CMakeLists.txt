@@ -78,6 +78,8 @@ set(GCS_PLAYER_SOURCES
     "${GCS_CORE_SRC_DIR}/MainWindow.ui"
     "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
     "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoReceiver.h"
+    "${GCS_VIDEO_MODULE_SRC_DIR}/VideoSettingsConfig.cpp"
+    "${GCS_VIDEO_MODULE_INC_DIR}/VideoSettingsConfig.h"
 )
 
 qt_standard_project_setup(I18N_TRANSLATED_LANGUAGES uk_UA)

@@ -27,6 +27,8 @@ protected:
 
 private:
     void setupVideoSettingsUi();
+    void loadVideoSettings();
+    bool saveVideoSettings() const;
     void ensureVideoWidget();
     void restartVideoReceiver();
     void updateVideoSurfaceGeometry();
