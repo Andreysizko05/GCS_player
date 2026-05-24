@@ -20,6 +20,13 @@ namespace
 constexpr int kPlaceholderWidth = 1280;
 constexpr int kPlaceholderHeight = 720;
 
+bool elementHasProperty(GstElement* element, const char* propertyName)
+{
+    return element != nullptr
+        && propertyName != nullptr
+        && g_object_class_find_property(G_OBJECT_GET_CLASS(element), propertyName) != nullptr;
+}
+
 QString transportName(GstVideoReceiver::Transport transport)
 {
     switch (transport) {
@@ -405,6 +412,9 @@ bool GstVideoReceiver::createPipeline()
     }
     if (m_parser != nullptr) {
         g_object_set(m_parser, "config-interval", 1, nullptr);
+    }
+    if (m_tsDemux != nullptr && m_settings.lowLatency && elementHasProperty(m_tsDemux, "latency")) {
+        g_object_set(m_tsDemux, "latency", std::max(0, m_settings.mpegTsLowLatencyMs), nullptr);
     }
     g_object_set(
         m_appSink,

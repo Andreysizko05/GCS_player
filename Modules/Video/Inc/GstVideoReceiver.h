@@ -36,6 +36,7 @@ public:
         int rtpPayload = 96;
         int rtpClockRate = 90000;
         int jitterLatencyMs = 50;
+        int mpegTsLowLatencyMs = 0;
         int frameTimeoutMs = 3000;
         int restartDelayMs = 1000;
         int appSinkMaxBuffers = 1;
