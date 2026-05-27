@@ -71,9 +71,8 @@ void configureUsbSourceElement(
     }
 
     if (settings.usbDeviceIndex >= 0 && setElementIntProperty(source, "device-index", settings.usbDeviceIndex)) {
-        // The Windows capture backend is Media Foundation, while UVC controls are
-        // queried via DirectShow. The shared enumeration index is the most stable
-        // bridge between the two APIs for ordinary USB cameras.
+        // Some capture backends (Media Foundation, AVFoundation) select cameras
+        // by index instead of a device path.
     } else if (!settings.usbDeviceId.isEmpty()) {
         if (!setElementStringProperty(source, "device", settings.usbDeviceId)
             && !setElementStringProperty(source, "device-path", settings.usbDeviceId)) {

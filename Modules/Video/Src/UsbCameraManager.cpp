@@ -21,6 +21,14 @@
 #include <dshow.h>
 #include <dvdmedia.h>
 #endif
+#ifdef Q_OS_LINUX
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 namespace
 {
@@ -171,6 +179,76 @@ bool fractionFromStructure(const GstStructure* structure, int& numerator, int& d
     }
 
     return false;
+}
+
+QString structureStringField(const GstStructure* structure, const char* field)
+{
+    if (structure == nullptr) {
+        return {};
+    }
+
+    const char* value = gst_structure_get_string(structure, field);
+    return value != nullptr ? QString::fromUtf8(value) : QString();
+}
+
+QString deviceIdFromProperties(const GstStructure* properties)
+{
+    const QStringList candidateFields = {
+        QStringLiteral("device.path"),
+        QStringLiteral("device.node"),
+        QStringLiteral("api.v4l2.path"),
+        QStringLiteral("device"),
+        QStringLiteral("device.name")
+    };
+    for (const QString& field : candidateFields) {
+        const QString value = structureStringField(properties, field.toUtf8().constData());
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+
+    return {};
+}
+
+QString platformVideoApiName()
+{
+#ifdef Q_OS_WIN
+    return QStringLiteral("mediafoundation");
+#elif defined(Q_OS_LINUX)
+    return QStringLiteral("v4l2");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("avfoundation");
+#else
+    return {};
+#endif
+}
+
+bool apiMatchesPlatform(const QString& api)
+{
+    const QString expectedApi = platformVideoApiName();
+    if (expectedApi.isEmpty()) {
+        return true;
+    }
+    if (api.isEmpty()) {
+        return false;
+    }
+
+    return api.contains(expectedApi, Qt::CaseInsensitive);
+}
+
+QString backendLabelFromApi(const QString& api)
+{
+    if (api.contains(QStringLiteral("mediafoundation"), Qt::CaseInsensitive)) {
+        return QStringLiteral("Media Foundation");
+    }
+    if (api.contains(QStringLiteral("v4l2"), Qt::CaseInsensitive)) {
+        return QStringLiteral("V4L2");
+    }
+    if (api.contains(QStringLiteral("avfoundation"), Qt::CaseInsensitive)) {
+        return QStringLiteral("AVFoundation");
+    }
+
+    return api.isEmpty() ? UsbCameraManager::sourceFactoryName() : api;
 }
 
 #ifdef Q_OS_WIN
@@ -542,7 +620,70 @@ void sortModes(QVector<UsbCameraMode>& modes)
     });
 }
 
-QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(const QString& preferredName, int preferredIndex)
+QVector<UsbCameraDevice> devicesFromGStreamer()
+{
+    QVector<UsbCameraDevice> result;
+    if (!ensureGStreamerReady()) {
+        return result;
+    }
+
+    GstDeviceMonitor* monitor = gst_device_monitor_new();
+    if (monitor == nullptr) {
+        return result;
+    }
+
+    gst_device_monitor_add_filter(monitor, "Video/Source", nullptr);
+    if (!gst_device_monitor_start(monitor)) {
+        gst_object_unref(monitor);
+        return result;
+    }
+
+    GList* devices = gst_device_monitor_get_devices(monitor);
+    int platformIndex = 0;
+    for (GList* item = devices; item != nullptr; item = item->next) {
+        GstDevice* gstDevice = GST_DEVICE(item->data);
+        GstStructure* properties = gst_device_get_properties(gstDevice);
+        const QString api = structureStringField(properties, "device.api");
+        if (!apiMatchesPlatform(api)) {
+            if (properties != nullptr) {
+                gst_structure_free(properties);
+            }
+            continue;
+        }
+
+        gchar* displayNameRaw = gst_device_get_display_name(gstDevice);
+        UsbCameraDevice device;
+        device.displayName = QString::fromUtf8(displayNameRaw != nullptr ? displayNameRaw : "");
+        g_free(displayNameRaw);
+        device.id = deviceIdFromProperties(properties);
+        if (device.id.isEmpty()) {
+            device.id = device.displayName;
+        }
+        if (device.displayName.isEmpty()) {
+            device.displayName = device.id.isEmpty()
+                ? QStringLiteral("USB camera %1").arg(platformIndex + 1)
+                : device.id;
+        }
+        device.backend = backendLabelFromApi(api);
+        device.index = platformIndex;
+        result.append(device);
+        ++platformIndex;
+
+        if (properties != nullptr) {
+            gst_structure_free(properties);
+        }
+    }
+
+    g_list_free_full(devices, reinterpret_cast<GDestroyNotify>(gst_object_unref));
+    gst_device_monitor_stop(monitor);
+    gst_object_unref(monitor);
+    return result;
+}
+
+QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
+    const QString& preferredId,
+    const QString& preferredName,
+    int preferredIndex)
 {
     QVector<UsbCameraMode> result;
     if (!ensureGStreamerReady()) {
@@ -561,30 +702,32 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(const QString& preferredName
     }
 
     GList* devices = gst_device_monitor_get_devices(monitor);
-    int mediaFoundationIndex = 0;
+    int platformIndex = 0;
     GstDevice* matchedDevice = nullptr;
     for (GList* item = devices; item != nullptr; item = item->next) {
         GstDevice* device = GST_DEVICE(item->data);
         GstStructure* properties = gst_device_get_properties(device);
-        const char* api = properties != nullptr
-            ? gst_structure_get_string(properties, "device.api")
-            : nullptr;
-        const bool isMediaFoundation = api != nullptr && qstrcmp(api, "mediafoundation") == 0;
-        if (isMediaFoundation) {
+        const QString api = structureStringField(properties, "device.api");
+        if (apiMatchesPlatform(api)) {
+            const QString id = deviceIdFromProperties(properties);
             gchar* displayNameRaw = gst_device_get_display_name(device);
             const QString displayName = QString::fromUtf8(displayNameRaw != nullptr ? displayNameRaw : "");
             g_free(displayNameRaw);
+            const bool idMatches = !preferredId.isEmpty() && id == preferredId;
             const bool nameMatches = !preferredName.isEmpty()
                 && displayName.compare(preferredName, Qt::CaseInsensitive) == 0;
-            const bool indexMatches = preferredIndex >= 0 && preferredIndex == mediaFoundationIndex;
-            if (nameMatches || indexMatches || (preferredName.isEmpty() && preferredIndex < 0 && matchedDevice == nullptr)) {
+            const bool indexMatches = preferredIndex >= 0 && preferredIndex == platformIndex;
+            if (idMatches
+                || nameMatches
+                || indexMatches
+                || (preferredId.isEmpty() && preferredName.isEmpty() && preferredIndex < 0 && matchedDevice == nullptr)) {
                 matchedDevice = GST_DEVICE(gst_object_ref(device));
                 if (properties != nullptr) {
                     gst_structure_free(properties);
                 }
                 break;
             }
-            ++mediaFoundationIndex;
+            ++platformIndex;
         }
         if (properties != nullptr) {
             gst_structure_free(properties);
@@ -797,6 +940,239 @@ bool isValidControl(const UsbCameraControl& control)
     return !control.id.isEmpty() && control.minimum <= control.maximum;
 }
 #endif
+
+#ifdef Q_OS_LINUX
+class FileDescriptor
+{
+public:
+    explicit FileDescriptor(const QString& path)
+        : m_fd(open(path.toLocal8Bit().constData(), O_RDWR | O_NONBLOCK))
+    {
+    }
+
+    ~FileDescriptor()
+    {
+        if (m_fd >= 0) {
+            close(m_fd);
+        }
+    }
+
+    int get() const
+    {
+        return m_fd;
+    }
+
+    bool valid() const
+    {
+        return m_fd >= 0;
+    }
+
+private:
+    int m_fd = -1;
+};
+
+QString controlIdFromV4l2(quint32 valueId, quint32 autoId = 0)
+{
+    return autoId == 0
+        ? QStringLiteral("v4l2:%1").arg(valueId)
+        : QStringLiteral("v4l2:%1:%2").arg(valueId).arg(autoId);
+}
+
+bool parseV4l2ControlId(const QString& controlId, quint32& valueId, quint32& autoId)
+{
+    const QStringList parts = controlId.split(QLatin1Char(':'));
+    if (parts.size() < 2 || parts.first() != QStringLiteral("v4l2")) {
+        return false;
+    }
+
+    bool ok = false;
+    valueId = parts.at(1).toUInt(&ok);
+    if (!ok) {
+        return false;
+    }
+    autoId = 0;
+    if (parts.size() >= 3) {
+        autoId = parts.at(2).toUInt(&ok);
+        if (!ok) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+quint32 companionAutoControlId(quint32 valueId)
+{
+    switch (valueId) {
+    case V4L2_CID_EXPOSURE_ABSOLUTE:
+        return V4L2_CID_EXPOSURE_AUTO;
+    case V4L2_CID_FOCUS_ABSOLUTE:
+        return V4L2_CID_FOCUS_AUTO;
+    case V4L2_CID_WHITE_BALANCE_TEMPERATURE:
+        return V4L2_CID_AUTO_WHITE_BALANCE;
+    case V4L2_CID_GAIN:
+        return V4L2_CID_AUTOGAIN;
+#ifdef V4L2_CID_HUE_AUTO
+    case V4L2_CID_HUE:
+        return V4L2_CID_HUE_AUTO;
+#endif
+    default:
+        return 0;
+    }
+}
+
+bool isAutoCompanionControl(quint32 controlId)
+{
+    switch (controlId) {
+    case V4L2_CID_EXPOSURE_AUTO:
+    case V4L2_CID_FOCUS_AUTO:
+    case V4L2_CID_AUTO_WHITE_BALANCE:
+    case V4L2_CID_AUTOGAIN:
+        return true;
+#ifdef V4L2_CID_HUE_AUTO
+    case V4L2_CID_HUE_AUTO:
+        return true;
+#endif
+    default:
+        return false;
+    }
+}
+
+bool getV4l2ControlValue(int fd, quint32 controlId, int& value)
+{
+    v4l2_control control = {};
+    control.id = controlId;
+    if (ioctl(fd, VIDIOC_G_CTRL, &control) != 0) {
+        return false;
+    }
+
+    value = control.value;
+    return true;
+}
+
+bool setV4l2ControlValue(int fd, quint32 controlId, int value)
+{
+    v4l2_control control = {};
+    control.id = controlId;
+    control.value = value;
+    return ioctl(fd, VIDIOC_S_CTRL, &control) == 0;
+}
+
+bool isV4l2AutoEnabled(quint32 autoId, int value)
+{
+    if (autoId == 0) {
+        return false;
+    }
+    if (autoId == V4L2_CID_EXPOSURE_AUTO) {
+        return value != V4L2_EXPOSURE_MANUAL;
+    }
+
+    return value != 0;
+}
+
+int v4l2AutoValueForState(quint32 autoId, bool automatic)
+{
+    if (autoId == V4L2_CID_EXPOSURE_AUTO) {
+        return automatic ? V4L2_EXPOSURE_AUTO : V4L2_EXPOSURE_MANUAL;
+    }
+
+    return automatic ? 1 : 0;
+}
+
+QMap<quint32, v4l2_queryctrl> queryV4l2Controls(int fd)
+{
+    QMap<quint32, v4l2_queryctrl> result;
+
+    v4l2_queryctrl query = {};
+    query.id = V4L2_CTRL_FLAG_NEXT_CTRL;
+    while (ioctl(fd, VIDIOC_QUERYCTRL, &query) == 0) {
+        if ((query.flags & V4L2_CTRL_FLAG_DISABLED) == 0) {
+            result.insert(query.id, query);
+        }
+        query.id |= V4L2_CTRL_FLAG_NEXT_CTRL;
+    }
+
+    if (!result.isEmpty()) {
+        return result;
+    }
+
+    for (quint32 id = V4L2_CID_BASE; id < V4L2_CID_LASTP1; ++id) {
+        query = {};
+        query.id = id;
+        if (ioctl(fd, VIDIOC_QUERYCTRL, &query) == 0
+            && (query.flags & V4L2_CTRL_FLAG_DISABLED) == 0) {
+            result.insert(query.id, query);
+        }
+    }
+    for (quint32 id = V4L2_CID_CAMERA_CLASS_BASE; id < V4L2_CID_CAMERA_CLASS_BASE + 64; ++id) {
+        query = {};
+        query.id = id;
+        if (ioctl(fd, VIDIOC_QUERYCTRL, &query) == 0
+            && (query.flags & V4L2_CTRL_FLAG_DISABLED) == 0) {
+            result.insert(query.id, query);
+        }
+    }
+
+    return result;
+}
+
+bool isSupportedV4l2ValueControl(const v4l2_queryctrl& query)
+{
+    if (isAutoCompanionControl(query.id)) {
+        return false;
+    }
+
+    switch (query.type) {
+    case V4L2_CTRL_TYPE_INTEGER:
+    case V4L2_CTRL_TYPE_BOOLEAN:
+        return true;
+    default:
+        return false;
+    }
+}
+
+QVector<UsbCameraControl> controlsFromV4l2Device(const QString& devicePath)
+{
+    QVector<UsbCameraControl> result;
+    FileDescriptor device(devicePath);
+    if (!device.valid()) {
+        return result;
+    }
+
+    const QMap<quint32, v4l2_queryctrl> queries = queryV4l2Controls(device.get());
+    for (auto it = queries.cbegin(); it != queries.cend(); ++it) {
+        const v4l2_queryctrl& query = it.value();
+        if (!isSupportedV4l2ValueControl(query)) {
+            continue;
+        }
+
+        UsbCameraControl control;
+        const quint32 autoId = companionAutoControlId(query.id);
+        const bool hasAuto = autoId != 0 && queries.contains(autoId);
+        control.id = controlIdFromV4l2(query.id, hasAuto ? autoId : 0);
+        control.displayName = QString::fromUtf8(reinterpret_cast<const char*>(query.name));
+        control.minimum = query.minimum;
+        control.maximum = query.maximum;
+        control.step = std::max(1, query.step);
+        control.defaultValue = query.default_value;
+        control.supportsAuto = hasAuto;
+
+        int value = query.default_value;
+        getV4l2ControlValue(device.get(), query.id, value);
+        control.state.value = value;
+        if (hasAuto) {
+            int autoValue = 0;
+            if (getV4l2ControlValue(device.get(), autoId, autoValue)) {
+                control.state.automatic = isV4l2AutoEnabled(autoId, autoValue);
+            }
+        }
+
+        result.append(control);
+    }
+
+    return result;
+}
+#endif
 } // namespace
 
 QVector<UsbCameraDevice> UsbCameraManager::devices()
@@ -834,6 +1210,8 @@ QVector<UsbCameraDevice> UsbCameraManager::devices()
     }
 
     releaseCom(enumMoniker);
+#else
+    result = devicesFromGStreamer();
 #endif
     return result;
 }
@@ -847,17 +1225,11 @@ QVector<UsbCameraMode> UsbCameraManager::modes(const QString& deviceId, int devi
         IMoniker* moniker = findVideoDeviceMoniker(deviceId);
         const QString friendlyName = monikerFriendlyName(moniker);
         releaseCom(moniker);
-        result = modesFromGStreamerDeviceCaps(friendlyName, deviceIndex);
+        result = modesFromGStreamerDeviceCaps({}, friendlyName, deviceIndex);
     }
     return result;
 #else
-    Q_UNUSED(deviceId)
-    Q_UNUSED(deviceIndex)
-    if (!ensureGStreamerReady()) {
-        return result;
-    }
-
-    return result;
+    return modesFromGStreamerDeviceCaps(deviceId, {}, deviceIndex);
 #endif
 }
 
@@ -892,6 +1264,10 @@ QVector<UsbCameraControl> UsbCameraManager::controls(const QString& deviceId)
     releaseCom(cameraControl);
     releaseCom(procAmp);
     releaseCom(filter);
+#elif defined(Q_OS_LINUX)
+    result = controlsFromV4l2Device(deviceId);
+#else
+    Q_UNUSED(deviceId)
 #endif
     return result;
 }
@@ -1000,6 +1376,46 @@ bool UsbCameraManager::setControl(
 
     return true;
 #else
+#ifdef Q_OS_LINUX
+    quint32 valueId = 0;
+    quint32 autoId = 0;
+    if (!parseV4l2ControlId(controlId, valueId, autoId)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unknown V4L2 control: %1").arg(controlId);
+        }
+        return false;
+    }
+
+    FileDescriptor device(deviceId);
+    if (!device.valid()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Unable to open %1: %2.")
+                .arg(deviceId, QString::fromLocal8Bit(strerror(errno)));
+        }
+        return false;
+    }
+
+    if (autoId != 0) {
+        const int autoValue = v4l2AutoValueForState(autoId, state.automatic);
+        if (!setV4l2ControlValue(device.get(), autoId, autoValue)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("Unable to set V4L2 auto control %1.").arg(autoId);
+            }
+            return false;
+        }
+    }
+
+    if (!state.automatic) {
+        if (!setV4l2ControlValue(device.get(), valueId, state.value)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("Unable to set V4L2 control %1.").arg(valueId);
+            }
+            return false;
+        }
+    }
+
+    return true;
+#else
     Q_UNUSED(deviceId)
     Q_UNUSED(controlId)
     Q_UNUSED(state)
@@ -1007,5 +1423,6 @@ bool UsbCameraManager::setControl(
         *errorMessage = QStringLiteral("UVC control editing is not implemented on this platform.");
     }
     return false;
+#endif
 #endif
 }
