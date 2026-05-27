@@ -1,6 +1,9 @@
 #ifndef GSTVIDEORECEIVER_H
 #define GSTVIDEORECEIVER_H
 
+#include "UsbCameraManager.h"
+
+#include <QMap>
 #include <QSize>
 #include <QString>
 #include <QThread>
@@ -19,7 +22,8 @@ class GstVideoReceiver : public QThread
 public:
     enum class Transport {
         UdpRtp,
-        UdpMpegTs
+        UdpMpegTs,
+        UsbCamera
     };
 
     enum class Codec {
@@ -41,6 +45,11 @@ public:
         int restartDelayMs = 1000;
         int appSinkMaxBuffers = 1;
         QString appSinkFormat = QStringLiteral("BGRA");
+        QString usbDeviceId;
+        QString usbDeviceName;
+        int usbDeviceIndex = -1;
+        QString usbModeCaps;
+        QMap<QString, UsbCameraControlState> usbControls;
     };
 
     explicit GstVideoReceiver(QObject* parent = nullptr);
@@ -78,6 +87,8 @@ private:
 
     GstElement* m_pipeline = nullptr;
     GstElement* m_udpSource = nullptr;
+    GstElement* m_usbSource = nullptr;
+    GstElement* m_usbCapsFilter = nullptr;
     GstElement* m_jitterBuffer = nullptr;
     GstElement* m_depayloader = nullptr;
     GstElement* m_parser = nullptr;

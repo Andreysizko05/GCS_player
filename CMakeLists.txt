@@ -78,6 +78,8 @@ set(GCS_PLAYER_SOURCES
     "${GCS_CORE_SRC_DIR}/MainWindow.ui"
     "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
     "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoReceiver.h"
+    "${GCS_VIDEO_MODULE_SRC_DIR}/UsbCameraManager.cpp"
+    "${GCS_VIDEO_MODULE_INC_DIR}/UsbCameraManager.h"
     "${GCS_VIDEO_MODULE_SRC_DIR}/VideoSettingsConfig.cpp"
     "${GCS_VIDEO_MODULE_INC_DIR}/VideoSettingsConfig.h"
 )
@@ -105,6 +107,14 @@ target_link_libraries(GCS_player PRIVATE
     Qt6::MultimediaWidgets
     PkgConfig::GSTREAMER
 )
+
+if(WIN32)
+    target_link_libraries(GCS_player PRIVATE
+        strmiids
+        ole32
+        oleaut32
+    )
+endif()
 
 if(NOT WIN32 AND GSTREAMER_LIBRARY_DIRS)
     set(_gcs_append_gstreamer_rpath TRUE)

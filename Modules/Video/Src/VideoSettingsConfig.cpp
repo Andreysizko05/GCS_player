@@ -15,6 +15,8 @@ namespace
 QString transportName(GstVideoReceiver::Transport transport)
 {
     switch (transport) {
+    case GstVideoReceiver::Transport::UsbCamera:
+        return QStringLiteral("usb-camera");
     case GstVideoReceiver::Transport::UdpMpegTs:
         return QStringLiteral("udp-mpeg-ts");
     case GstVideoReceiver::Transport::UdpRtp:
@@ -26,9 +28,14 @@ QString transportName(GstVideoReceiver::Transport transport)
 
 GstVideoReceiver::Transport transportFromName(const QString& name)
 {
-    return name.compare(QStringLiteral("udp-mpeg-ts"), Qt::CaseInsensitive) == 0
-        ? GstVideoReceiver::Transport::UdpMpegTs
-        : GstVideoReceiver::Transport::UdpRtp;
+    if (name.compare(QStringLiteral("usb-camera"), Qt::CaseInsensitive) == 0) {
+        return GstVideoReceiver::Transport::UsbCamera;
+    }
+    if (name.compare(QStringLiteral("udp-mpeg-ts"), Qt::CaseInsensitive) == 0) {
+        return GstVideoReceiver::Transport::UdpMpegTs;
+    }
+
+    return GstVideoReceiver::Transport::UdpRtp;
 }
 
 QString codecName(GstVideoReceiver::Codec codec)
@@ -132,6 +139,23 @@ VideoSettingsConfig::LoadResult VideoSettingsConfig::loadOrCreate() const
         result.settings.lowLatency = lowLatencyValue.toBool();
     }
 
+    result.settings.usbDeviceId = config.value(QStringLiteral("usbDeviceId")).toString();
+    result.settings.usbDeviceName = config.value(QStringLiteral("usbDeviceName")).toString();
+    result.settings.usbDeviceIndex = config.value(QStringLiteral("usbDeviceIndex")).toInt(-1);
+    result.settings.usbModeCaps = config.value(QStringLiteral("usbModeCaps")).toString();
+    const QJsonObject usbControls = config.value(QStringLiteral("usbControls")).toObject();
+    for (auto it = usbControls.begin(); it != usbControls.end(); ++it) {
+        if (!it.value().isObject()) {
+            continue;
+        }
+
+        const QJsonObject controlObject = it.value().toObject();
+        UsbCameraControlState state;
+        state.value = controlObject.value(QStringLiteral("value")).toInt();
+        state.automatic = controlObject.value(QStringLiteral("automatic")).toBool();
+        result.settings.usbControls.insert(it.key(), state);
+    }
+
     return result;
 }
 
@@ -152,6 +176,19 @@ bool VideoSettingsConfig::save(const Settings& settings, QString* errorMessage) 
     config.insert(QStringLiteral("bindAddress"), settings.bindAddress.trimmed());
     config.insert(QStringLiteral("port"), settings.port);
     config.insert(QStringLiteral("lowLatency"), settings.lowLatency);
+    config.insert(QStringLiteral("usbDeviceId"), settings.usbDeviceId);
+    config.insert(QStringLiteral("usbDeviceName"), settings.usbDeviceName);
+    config.insert(QStringLiteral("usbDeviceIndex"), settings.usbDeviceIndex);
+    config.insert(QStringLiteral("usbModeCaps"), settings.usbModeCaps);
+
+    QJsonObject usbControls;
+    for (auto it = settings.usbControls.cbegin(); it != settings.usbControls.cend(); ++it) {
+        QJsonObject controlObject;
+        controlObject.insert(QStringLiteral("value"), it.value().value);
+        controlObject.insert(QStringLiteral("automatic"), it.value().automatic);
+        usbControls.insert(it.key(), controlObject);
+    }
+    config.insert(QStringLiteral("usbControls"), usbControls);
 
     QFile configFile(mConfigPath);
     if (!configFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {

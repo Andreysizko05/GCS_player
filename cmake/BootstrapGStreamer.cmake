@@ -31,6 +31,32 @@ if(NOT "mpegtsdemux" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
         CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
     )
 endif()
+if(WIN32 AND NOT "directshow" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
+    list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "directshow")
+    set(GCS_REQUIRED_GSTREAMER_PLUGINS
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+        CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
+    )
+endif()
+if(WIN32 AND NOT "mediafoundation" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
+    list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "mediafoundation")
+    set(GCS_REQUIRED_GSTREAMER_PLUGINS
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+        CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
+    )
+elseif(UNIX AND NOT APPLE AND NOT "video4linux2" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
+    list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "video4linux2")
+    set(GCS_REQUIRED_GSTREAMER_PLUGINS
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+        CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
+    )
+elseif(APPLE AND NOT "applemedia" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
+    list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "applemedia")
+    set(GCS_REQUIRED_GSTREAMER_PLUGINS
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+        CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
+    )
+endif()
 
 set(_GCS_GSTREAMER_SHA256_WINDOWS_MSVC_X86_64_1_28_1
     "2ec50356d2d0937a9ead0f99d322f81d8413b9514c9d58ed41ca58fbcf25bfde"

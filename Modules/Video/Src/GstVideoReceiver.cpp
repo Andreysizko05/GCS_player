@@ -30,6 +30,8 @@ bool elementHasProperty(GstElement* element, const char* propertyName)
 QString transportName(GstVideoReceiver::Transport transport)
 {
     switch (transport) {
+    case GstVideoReceiver::Transport::UsbCamera:
+        return QStringLiteral("USB camera");
     case GstVideoReceiver::Transport::UdpRtp:
         return QStringLiteral("UDP/RTP");
     case GstVideoReceiver::Transport::UdpMpegTs:
@@ -37,6 +39,53 @@ QString transportName(GstVideoReceiver::Transport transport)
     }
 
     return QStringLiteral("UDP");
+}
+
+bool setElementStringProperty(GstElement* element, const char* propertyName, const QString& value)
+{
+    if (value.isEmpty() || !elementHasProperty(element, propertyName)) {
+        return false;
+    }
+
+    const QByteArray bytes = value.toUtf8();
+    g_object_set(element, propertyName, bytes.constData(), nullptr);
+    return true;
+}
+
+bool setElementIntProperty(GstElement* element, const char* propertyName, int value)
+{
+    if (!elementHasProperty(element, propertyName)) {
+        return false;
+    }
+
+    g_object_set(element, propertyName, value, nullptr);
+    return true;
+}
+
+void configureUsbSourceElement(
+    GstElement* source,
+    const GstVideoReceiver::StreamSettings& settings)
+{
+    if (source == nullptr) {
+        return;
+    }
+
+    if (settings.usbDeviceIndex >= 0 && setElementIntProperty(source, "device-index", settings.usbDeviceIndex)) {
+        // The Windows capture backend is Media Foundation, while UVC controls are
+        // queried via DirectShow. The shared enumeration index is the most stable
+        // bridge between the two APIs for ordinary USB cameras.
+    } else if (!settings.usbDeviceId.isEmpty()) {
+        if (!setElementStringProperty(source, "device", settings.usbDeviceId)
+            && !setElementStringProperty(source, "device-path", settings.usbDeviceId)) {
+            setElementStringProperty(source, "device-name", settings.usbDeviceName);
+        }
+    } else if (!settings.usbDeviceName.isEmpty()) {
+        setElementStringProperty(source, "device-name", settings.usbDeviceName);
+    }
+
+    if (elementHasProperty(source, "do-timestamp")) {
+        g_object_set(source, "do-timestamp", TRUE, nullptr);
+    }
 }
 
 QString codecName(GstVideoReceiver::Codec codec)
@@ -255,15 +304,26 @@ void GstVideoReceiver::run()
         return;
     }
 
-    const QString videoDescription = m_settings.transport == Transport::UdpMpegTs
-        ? QStringLiteral("%1 video, codec auto-detected").arg(transportName(m_settings.transport))
-        : QStringLiteral("%1/%2 video").arg(transportName(m_settings.transport), codecName(m_settings.codec));
+    QString videoDescription;
+    if (m_settings.transport == Transport::UsbCamera) {
+        videoDescription = m_settings.usbDeviceName.isEmpty()
+            ? QStringLiteral("USB camera")
+            : QStringLiteral("USB camera %1").arg(m_settings.usbDeviceName);
+    } else if (m_settings.transport == Transport::UdpMpegTs) {
+        videoDescription = QStringLiteral("%1 video, codec auto-detected")
+            .arg(transportName(m_settings.transport));
+    } else {
+        videoDescription = QStringLiteral("%1/%2 video")
+            .arg(transportName(m_settings.transport), codecName(m_settings.codec));
+    }
 
     emit frameReady(makePlaceholderFrame(
-        QStringLiteral("Listening on %1:%2 for %3.")
-            .arg(m_settings.udpHost)
-            .arg(m_settings.udpPort)
-            .arg(videoDescription)
+        m_settings.transport == Transport::UsbCamera
+            ? QStringLiteral("Opening %1.").arg(videoDescription)
+            : QStringLiteral("Listening on %1:%2 for %3.")
+                .arg(m_settings.udpHost)
+                .arg(m_settings.udpPort)
+                .arg(videoDescription)
     ));
 
     while (!m_stopRequested.load(std::memory_order_relaxed)) {
@@ -321,22 +381,36 @@ bool GstVideoReceiver::createPipeline()
     m_lastFrameHeight.store(0, std::memory_order_relaxed);
 
     const bool useRtp = m_settings.transport == Transport::UdpRtp;
+    const bool useMpegTs = m_settings.transport == Transport::UdpMpegTs;
+    const bool useUsb = m_settings.transport == Transport::UsbCamera;
+    const QString usbModeCaps = m_settings.usbModeCaps.trimmed();
+    const bool useUsbDecoder = useUsb
+        && !usbModeCaps.isEmpty()
+        && !usbModeCaps.startsWith(QStringLiteral("video/x-raw"), Qt::CaseInsensitive);
 
     m_pipeline = gst_pipeline_new("gcs-player-video-pipeline");
-    m_udpSource = gst_element_factory_make("udpsrc", "udp-source");
+    if (useUsb) {
+        const QByteArray sourceFactory = UsbCameraManager::sourceFactoryName().toUtf8();
+        m_usbSource = gst_element_factory_make(sourceFactory.constData(), "usb-source");
+        m_usbCapsFilter = gst_element_factory_make("capsfilter", "usb-caps-filter");
+    } else {
+        m_udpSource = gst_element_factory_make("udpsrc", "udp-source");
+    }
     if (useRtp) {
         if (!m_settings.lowLatency) {
             m_jitterBuffer = gst_element_factory_make("rtpjitterbuffer", "rtp-jitter-buffer");
         }
         m_depayloader = gst_element_factory_make(depayloaderFactory(m_settings.codec), "rtp-depay");
         m_parser = gst_element_factory_make(parserFactory(m_settings.codec), "video-parser");
-    } else {
+    } else if (useMpegTs) {
         m_tsDemux = gst_element_factory_make("tsdemux", "mpeg-ts-demux");
     }
     m_decodeQueue = gst_element_factory_make("queue", "decode-queue");
-    m_decoder = gst_element_factory_make("decodebin3", "video-decoder");
-    if (m_decoder == nullptr) {
-        m_decoder = gst_element_factory_make("decodebin", "video-decoder");
+    if (!useUsb || useUsbDecoder) {
+        m_decoder = gst_element_factory_make("decodebin3", "video-decoder");
+        if (m_decoder == nullptr) {
+            m_decoder = gst_element_factory_make("decodebin", "video-decoder");
+        }
     }
     m_videoConvert = gst_element_factory_make("videoconvert", "video-convert");
     m_videoCapsFilter = gst_element_factory_make("capsfilter", "video-caps-filter");
@@ -350,18 +424,25 @@ bool GstVideoReceiver::createPipeline()
     };
 
     trackMissingElement(m_pipeline, QStringLiteral("pipeline"));
-    trackMissingElement(m_udpSource, QStringLiteral("udpsrc"));
+    if (useUsb) {
+        trackMissingElement(m_usbSource, UsbCameraManager::sourceFactoryName());
+        trackMissingElement(m_usbCapsFilter, QStringLiteral("capsfilter"));
+    } else {
+        trackMissingElement(m_udpSource, QStringLiteral("udpsrc"));
+    }
     if (useRtp) {
         if (!m_settings.lowLatency) {
             trackMissingElement(m_jitterBuffer, QStringLiteral("rtpjitterbuffer"));
         }
         trackMissingElement(m_depayloader, QString::fromUtf8(depayloaderFactory(m_settings.codec)));
         trackMissingElement(m_parser, QString::fromUtf8(parserFactory(m_settings.codec)));
-    } else {
+    } else if (useMpegTs) {
         trackMissingElement(m_tsDemux, QStringLiteral("tsdemux"));
     }
     trackMissingElement(m_decodeQueue, QStringLiteral("queue"));
-    trackMissingElement(m_decoder, QStringLiteral("decodebin3/decodebin"));
+    if (!useUsb || useUsbDecoder) {
+        trackMissingElement(m_decoder, QStringLiteral("decodebin3/decodebin"));
+    }
     trackMissingElement(m_videoConvert, QStringLiteral("videoconvert"));
     trackMissingElement(m_videoCapsFilter, QStringLiteral("capsfilter"));
     trackMissingElement(m_appSink, QStringLiteral("appsink"));
@@ -393,14 +474,39 @@ bool GstVideoReceiver::createPipeline()
     );
 
     const QByteArray udpHost = m_settings.udpHost.toUtf8();
-    g_object_set(
-        m_udpSource,
-        "address", udpHost.constData(),
-        "port", static_cast<int>(m_settings.udpPort),
-        nullptr
-    );
+    if (m_udpSource != nullptr) {
+        g_object_set(
+            m_udpSource,
+            "address", udpHost.constData(),
+            "port", static_cast<int>(m_settings.udpPort),
+            nullptr
+        );
+    }
     if (udpCaps != nullptr) {
         g_object_set(m_udpSource, "caps", udpCaps, nullptr);
+    }
+    if (m_usbSource != nullptr) {
+        configureUsbSourceElement(m_usbSource, m_settings);
+    }
+    if (m_usbCapsFilter != nullptr && !usbModeCaps.isEmpty()) {
+        const QByteArray modeCapsText = usbModeCaps.toUtf8();
+        GstCaps* usbCaps = gst_caps_from_string(modeCapsText.constData());
+        if (usbCaps == nullptr) {
+            emit receiverError(QStringLiteral("Invalid USB camera mode caps: %1.")
+                .arg(m_settings.usbModeCaps));
+            destroyPipeline();
+            return false;
+        }
+        g_object_set(m_usbCapsFilter, "caps", usbCaps, nullptr);
+        gst_caps_unref(usbCaps);
+    }
+    if (m_settings.transport == Transport::UsbCamera && !m_settings.usbControls.isEmpty()) {
+        for (auto it = m_settings.usbControls.cbegin(); it != m_settings.usbControls.cend(); ++it) {
+            QString controlError;
+            if (!UsbCameraManager::setControl(m_settings.usbDeviceId, it.key(), it.value(), &controlError)) {
+                emit receiverMessage(controlError);
+            }
+        }
     }
     if (m_jitterBuffer != nullptr) {
         g_object_set(
@@ -415,6 +521,16 @@ bool GstVideoReceiver::createPipeline()
     }
     if (m_tsDemux != nullptr && m_settings.lowLatency && elementHasProperty(m_tsDemux, "latency")) {
         g_object_set(m_tsDemux, "latency", std::max(0, m_settings.mpegTsLowLatencyMs), nullptr);
+    }
+    if (m_decodeQueue != nullptr) {
+        g_object_set(
+            m_decodeQueue,
+            "max-size-buffers", 2,
+            "max-size-bytes", 0,
+            "max-size-time", 0,
+            "leaky", 2,
+            nullptr
+        );
     }
     g_object_set(
         m_appSink,
@@ -435,7 +551,9 @@ bool GstVideoReceiver::createPipeline()
     if (m_tsDemux != nullptr) {
         g_signal_connect(m_tsDemux, "pad-added", G_CALLBACK(onTsDemuxPadAdded), this);
     }
-    g_signal_connect(m_decoder, "pad-added", G_CALLBACK(onDecoderPadAdded), this);
+    if (m_decoder != nullptr) {
+        g_signal_connect(m_decoder, "pad-added", G_CALLBACK(onDecoderPadAdded), this);
+    }
     g_signal_connect(m_appSink, "new-sample", G_CALLBACK(onNewSample), this);
 
     if (useRtp) {
@@ -477,7 +595,7 @@ bool GstVideoReceiver::createPipeline()
             destroyPipeline();
             return false;
         }
-    } else {
+    } else if (useMpegTs) {
         gst_bin_add_many(
             GST_BIN(m_pipeline),
             m_udpSource,
@@ -496,6 +614,43 @@ bool GstVideoReceiver::createPipeline()
             emit receiverError(QStringLiteral("Unable to link the MPEG-TS receive chain."));
             destroyPipeline();
             return false;
+        }
+    } else if (useUsb) {
+        if (useUsbDecoder) {
+            gst_bin_add_many(
+                GST_BIN(m_pipeline),
+                m_usbSource,
+                m_usbCapsFilter,
+                m_decodeQueue,
+                m_decoder,
+                m_videoConvert,
+                m_videoCapsFilter,
+                m_appSink,
+                nullptr
+            );
+
+            if (!gst_element_link_many(m_usbSource, m_usbCapsFilter, m_decodeQueue, m_decoder, nullptr)) {
+                emit receiverError(QStringLiteral("Unable to link the USB camera compressed receive chain."));
+                destroyPipeline();
+                return false;
+            }
+        } else {
+            gst_bin_add_many(
+                GST_BIN(m_pipeline),
+                m_usbSource,
+                m_usbCapsFilter,
+                m_decodeQueue,
+                m_videoConvert,
+                m_videoCapsFilter,
+                m_appSink,
+                nullptr
+            );
+
+            if (!gst_element_link_many(m_usbSource, m_usbCapsFilter, m_decodeQueue, m_videoConvert, nullptr)) {
+                emit receiverError(QStringLiteral("Unable to link the USB camera raw receive chain."));
+                destroyPipeline();
+                return false;
+            }
         }
     }
 
@@ -538,6 +693,8 @@ void GstVideoReceiver::destroyPipeline()
     }
 
     m_udpSource = nullptr;
+    m_usbSource = nullptr;
+    m_usbCapsFilter = nullptr;
     m_jitterBuffer = nullptr;
     m_depayloader = nullptr;
     m_parser = nullptr;

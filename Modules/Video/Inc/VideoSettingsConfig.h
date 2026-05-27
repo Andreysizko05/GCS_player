@@ -2,7 +2,9 @@
 #define VIDEOSETTINGSCONFIG_H
 
 #include "GstVideoReceiver.h"
+#include "UsbCameraManager.h"
 
+#include <QMap>
 #include <QString>
 
 class VideoSettingsConfig
@@ -14,6 +16,11 @@ public:
         QString bindAddress = QStringLiteral("0.0.0.0");
         quint16 port = 5600;
         bool lowLatency = false;
+        QString usbDeviceId;
+        QString usbDeviceName;
+        int usbDeviceIndex = -1;
+        QString usbModeCaps;
+        QMap<QString, UsbCameraControlState> usbControls;
     };
 
     struct LoadResult {
