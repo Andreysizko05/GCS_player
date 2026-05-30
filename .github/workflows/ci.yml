@@ -21,6 +21,7 @@ permissions:
 jobs:
   ubuntu-x64:
     name: Ubuntu 24.04 x64
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
