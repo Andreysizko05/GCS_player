@@ -50,12 +50,7 @@
         "lhs": "${hostSystemName}",
         "rhs": "Linux"
       },
-      "generator": "Ninja",
-      "cacheVariables": {
-        "GCS_PREFER_SYSTEM_QT": "OFF",
-        "GCS_FETCH_GSTREAMER": "OFF",
-        "GCS_USE_SYSTEM_GSTREAMER": "ON"
-      }
+      "generator": "Ninja"
     },
     {
       "name": "macos-base",

@@ -1112,6 +1112,20 @@ function(gcs_gst_find_system_root output_root_var output_version_var output_summ
     set(${output_summary_var} "${_summary_text}" PARENT_SCOPE)
 endfunction()
 
+function(gcs_gst_linux_package_hint output_var)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(${output_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    string(CONCAT _hint
+        "\nInstall GStreamer development/runtime packages and re-run CMake:\n"
+        "  Arch/EndeavourOS: sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav\n"
+        "  Debian/Ubuntu:    sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav"
+    )
+    set(${output_var} "${_hint}" PARENT_SCOPE)
+endfunction()
+
 function(gcs_gst_find_windows_sdk_root extracted_dir output_var)
     if(EXISTS "${extracted_dir}/bin/pkg-config.exe")
         set(${output_var} "${extracted_dir}" PARENT_SCOPE)
@@ -1569,6 +1583,7 @@ function(gcs_bootstrap_gstreamer)
     if(GCS_USE_SYSTEM_GSTREAMER)
         gcs_gst_find_system_root(_system_root _system_version _system_summary)
         if(NOT _system_root)
+            gcs_gst_linux_package_hint(_linux_package_hint)
             if(_system_summary)
                 set(_system_rejections_text "\nRejected candidates:\n  ${_system_summary}")
             else()
@@ -1578,6 +1593,7 @@ function(gcs_bootstrap_gstreamer)
                 "GCS_USE_SYSTEM_GSTREAMER=ON, but no complete system GStreamer >= "
                 "${GCS_MINIMUM_GSTREAMER_VERSION} SDK was found via GSTREAMER_* env vars, PATH, "
                 "pkg-config, or standard OS install locations.${_system_rejections_text}"
+                "${_linux_package_hint}"
             )
         endif()
 
@@ -1685,20 +1701,21 @@ function(gcs_bootstrap_gstreamer)
             )
             return()
         elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            gcs_gst_linux_package_hint(_linux_package_hint)
             message(FATAL_ERROR
-                "Automatic GStreamer SDK download is not available on Linux. "
-                "Place a complete GStreamer ${GCS_GSTREAMER_VERSION} SDK at ${_managed_root}, "
-                "set GCS_ALLOW_EXTERNAL_GSTREAMER=ON and GCS_EXTERNAL_GSTREAMER_ROOT=<path>, "
-                "or set GCS_USE_SYSTEM_GSTREAMER=ON to use a complete matching system SDK."
+                "Automatic GStreamer SDK download is not available on Linux."
+                "${_linux_package_hint}"
             )
         endif()
     endif()
 
     set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root." FORCE)
+    gcs_gst_linux_package_hint(_linux_package_hint)
     message(FATAL_ERROR
         "GStreamer is required, but the managed GStreamer ${GCS_GSTREAMER_VERSION} SDK "
         "was not found at ${_managed_root}. Enable GCS_FETCH_GSTREAMER, provide "
         "GCS_EXTERNAL_GSTREAMER_ROOT with GCS_ALLOW_EXTERNAL_GSTREAMER=ON, or set "
         "GCS_USE_SYSTEM_GSTREAMER=ON to use a complete matching system SDK."
+        "${_linux_package_hint}"
     )
 endfunction()

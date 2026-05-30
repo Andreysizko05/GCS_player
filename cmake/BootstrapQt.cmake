@@ -296,6 +296,32 @@ function(gcs_find_system_qt out_root out_config_dir out_version out_summary)
         list(APPEND _candidate_roots ${_prefix_path_candidates})
     endif()
 
+    find_program(_qt_pkg_config NAMES pkg-config pkgconf pkg-config.exe pkgconf.exe)
+    if(_qt_pkg_config)
+        execute_process(
+            COMMAND "${_qt_pkg_config}" --exists
+                Qt6Core
+                Qt6Widgets
+                Qt6Multimedia
+                Qt6MultimediaWidgets
+            RESULT_VARIABLE _qt_pkg_exists_result
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+        if(_qt_pkg_exists_result EQUAL 0)
+            execute_process(
+                COMMAND "${_qt_pkg_config}" --variable=prefix Qt6Core
+                RESULT_VARIABLE _qt_pkg_prefix_result
+                OUTPUT_VARIABLE _qt_pkg_prefix
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(_qt_pkg_prefix_result EQUAL 0 AND _qt_pkg_prefix)
+                list(APPEND _candidate_roots "${_qt_pkg_prefix}")
+            endif()
+        endif()
+    endif()
+
     find_program(_qt_qmake NAMES qmake6 qmake)
     if(_qt_qmake)
         execute_process(
