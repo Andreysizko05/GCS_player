@@ -401,7 +401,7 @@ elseif(UNIX AND NOT APPLE)
         set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
     endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "qt6-qpa-plugins, qt6-wayland, gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav"
+        "qt6-qpa-plugins, qt6-wayland, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav"
     )
 endif()
 

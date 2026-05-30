@@ -7,7 +7,7 @@ install_*/
 External/Qt/
 External/GStreamer/
 .vscode/
-
+artifacts/
 
 #Ignore thumbnails created by Windows
 #Ignore files built by Visual Studio
