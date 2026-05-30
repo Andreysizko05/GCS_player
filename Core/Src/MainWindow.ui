@@ -14,28 +14,51 @@
    <string>MainWindow</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <widget class="QLabel" name="videoFrameLabel">
-    <property name="geometry">
-     <rect>
-      <x>100</x>
-      <y>80</y>
-      <width>541</width>
-      <height>331</height>
-     </rect>
+   <layout class="QVBoxLayout" name="videoSurfaceLayout">
+    <property name="spacing">
+     <number>0</number>
     </property>
-    <property name="frameShape">
-     <enum>QFrame::Shape::Box</enum>
+    <property name="leftMargin">
+     <number>0</number>
     </property>
-    <property name="lineWidth">
-     <number>2</number>
+    <property name="topMargin">
+     <number>0</number>
     </property>
-    <property name="text">
-     <string>VideoFrame</string>
+    <property name="rightMargin">
+     <number>0</number>
     </property>
-    <property name="alignment">
-     <set>Qt::AlignmentFlag::AlignCenter</set>
+    <property name="bottomMargin">
+     <number>0</number>
     </property>
-   </widget>
+    <item>
+     <widget class="QLabel" name="videoFrameLabel">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="minimumSize">
+       <size>
+        <width>320</width>
+        <height>180</height>
+       </size>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="lineWidth">
+       <number>2</number>
+      </property>
+      <property name="text">
+       <string>VideoFrame</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+    </item>
+   </layout>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">

@@ -34,9 +34,6 @@ public:
     explicit MainWindow(QWidget *parent = nullptr, bool startVideoReceiver = true);
     ~MainWindow();
 
-protected:
-    void resizeEvent(QResizeEvent* event) override;
-
 private:
     void setupVideoSettingsUi();
     void loadVideoSettings();
@@ -44,9 +41,6 @@ private:
     bool saveVideoSettings() const;
     void ensureVideoWidget();
     void restartVideoReceiver();
-    void updateVideoSurfaceGeometry();
-    double targetVideoAspectRatio() const;
-    QWidget* videoSurfaceWidget() const;
     void setupUsbSettingsUi();
     void refreshUsbDevices(const QString& preferredDeviceId = QString());
     void refreshUsbModes(const QString& preferredModeCaps = QString());
@@ -89,12 +83,6 @@ private:
     QHash<QString, UsbControlWidgets> mUsbControlWidgets;
     bool mUpdatingUsbUi = false;
 
-    int mVideoAreaLeft = 0;
-    int mVideoAreaTop = 0;
-    int mVideoAreaRight = 0;
-    int mVideoAreaBottom = 0;
     QSize mVideoSize;
-    float mFrameWidthFactor = 0.995f;
-    float mFrameHeightFactor = 0.945f;
 };
 #endif // MAINWINDOW_H
