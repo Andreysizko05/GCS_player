@@ -75,7 +75,9 @@ How GStreamer is found:
 
 GStreamer source options:
 
-- Auto mode: default. CMake prefers a usable system GStreamer SDK and falls back to the managed SDK if discovery fails.
+- Auto mode: default on Windows and macOS. CMake prefers a usable system GStreamer SDK and falls back to the managed SDK if discovery fails.
+- Linux presets use system GStreamer by default (`GCS_USE_SYSTEM_GSTREAMER=ON`) because there is no official managed Linux SDK download path.
+- Linux presets use the aqt-managed Qt SDK by default (`GCS_PREFER_SYSTEM_QT=OFF`); Qt does not need to be installed through the distro package manager.
 - Managed SDK: use `GCS_GSTREAMER_FORCE_DOWNLOAD=ON` to refresh only the managed SDK under `GCS_GSTREAMER_INSTALL_ROOT`, even if a system SDK is available.
 - Explicit SDK path: set `GCS_ALLOW_EXTERNAL_GSTREAMER=ON` and `GCS_EXTERNAL_GSTREAMER_ROOT=<path>`.
 - System-only SDK: set `GCS_USE_SYSTEM_GSTREAMER=ON`.
@@ -99,7 +101,7 @@ How GStreamer files are staged:
 - GStreamer is bootstrapped by [cmake/BootstrapGStreamer.cmake](cmake/BootstrapGStreamer.cmake) when the managed SDK is selected and `GCS_FETCH_GSTREAMER=ON`.
 - On Windows, CMake downloads the official GStreamer MSVC SDK installer into `External/GStreamer` and installs it silently into a project-local prefix.
 - On macOS, CMake downloads the official runtime and development `.pkg` files and merges them into `External/GStreamer`.
-- On Linux, automatic GStreamer download is still unavailable. Use a valid system SDK, an explicit SDK path, or place a complete SDK under the managed root reported by CMake.
+- On Linux, automatic GStreamer download is still unavailable. The stock Linux presets use the distro packages through `pkg-config`.
 - CMake queries `pkg-config` for `pluginsdir`, `pluginscannerdir`, `giomoduledir`, and related paths.
 - On Windows, those directories are copied next to the built app, because local `.exe` execution usually needs nearby DLLs, plugins, and the plugin scanner.
 - On macOS and Linux, stale bundled GStreamer folders are removed so the selected SDK/runtime root is used consistently.
@@ -120,6 +122,19 @@ can take a few minutes while CMake expands the managed GStreamer packages and `g
 builds a local plugin registry under `build/<preset>`.
 
 Linux:
+
+Install the build tools and the GStreamer plugins used by the video receiver. Qt is fetched by `aqtinstall` during CMake configure.
+
+```bash
+# Arch / EndeavourOS
+sudo pacman -S --needed cmake ninja pkgconf gstreamer gst-plugins-base \
+  gst-plugins-good gst-plugins-bad gst-libav
+
+# Debian / Ubuntu
+sudo apt install build-essential cmake ninja-build pkg-config libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+```
 
 ```bash
 cmake --preset linux-debug

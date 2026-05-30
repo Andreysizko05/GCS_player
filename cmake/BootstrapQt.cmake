@@ -4,6 +4,7 @@ option(GCS_FETCH_QT_WITH_AQT "Automatically install Qt with aqtinstall during co
 option(GCS_QT_FORCE_DOWNLOAD "Refresh the managed Qt SDK with aqtinstall; cannot be combined with external/system Qt." OFF)
 option(GCS_ALLOW_EXTERNAL_QT "Allow an explicitly provided Qt SDK instead of the aqt-managed SDK." OFF)
 option(GCS_USE_SYSTEM_QT "Allow Qt discovery from common system environment variables and PATH." OFF)
+option(GCS_PREFER_SYSTEM_QT "Prefer a complete system Qt SDK before falling back to the aqt-managed SDK." ON)
 set(GCS_MINIMUM_QT_VERSION "6.2.0" CACHE STRING
     "Minimum acceptable Qt version for auto-discovered or explicitly provided SDKs."
 )
@@ -94,6 +95,26 @@ function(gcs_get_qt_config_dir_from_root root_dir out_var)
     else()
         set(${out_var} "" PARENT_SCOPE)
     endif()
+endfunction()
+
+function(gcs_pin_qt_package_dirs qt_root)
+    if(NOT qt_root)
+        return()
+    endif()
+
+    get_filename_component(_qt_root "${qt_root}" ABSOLUTE)
+    file(GLOB _qt_package_dirs LIST_DIRECTORIES true "${_qt_root}/lib/cmake/Qt6*")
+    foreach(_qt_package_dir IN LISTS _qt_package_dirs)
+        get_filename_component(_qt_package_name "${_qt_package_dir}" NAME)
+        if(EXISTS "${_qt_package_dir}/${_qt_package_name}Config.cmake")
+            set(
+                "${_qt_package_name}_DIR"
+                "${_qt_package_dir}"
+                CACHE PATH "Path to ${_qt_package_name}Config.cmake"
+                FORCE
+            )
+        endif()
+    endforeach()
 endfunction()
 
 function(gcs_get_qt_root_from_config_dir qt_config_dir out_var)
@@ -487,6 +508,7 @@ if(GCS_ALLOW_EXTERNAL_QT)
 
     list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
     set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
+    gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}")
     set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
     set(GCS_QT_RESOLVED_VERSION "${_gcs_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
     set(GCS_QT_SOURCE "external" CACHE INTERNAL "Resolved Qt SDK source.")
@@ -511,6 +533,7 @@ if(GCS_USE_SYSTEM_QT)
 
     list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
     set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
+    gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}")
     set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
     set(GCS_QT_RESOLVED_VERSION "${_gcs_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
     set(GCS_QT_SOURCE "system" CACHE INTERNAL "Resolved Qt SDK source.")
@@ -542,7 +565,7 @@ if(GCS_QT_FORCE_DOWNLOAD AND EXISTS "${_gcs_qt_root_dir}")
     file(REMOVE_RECURSE "${_gcs_qt_root_dir}")
 endif()
 
-if(NOT GCS_QT_FORCE_DOWNLOAD)
+if(NOT GCS_QT_FORCE_DOWNLOAD AND GCS_PREFER_SYSTEM_QT)
     gcs_find_system_qt(_gcs_auto_qt_root _gcs_auto_qt_cmake_dir _gcs_auto_qt_version _gcs_auto_qt_summary)
     if(_gcs_auto_qt_root AND "${_gcs_auto_qt_root}" STREQUAL "${_gcs_qt_root_dir}")
         set(_gcs_auto_qt_root "")
@@ -552,6 +575,7 @@ if(NOT GCS_QT_FORCE_DOWNLOAD)
     if(_gcs_auto_qt_root AND _gcs_auto_qt_cmake_dir)
         list(PREPEND CMAKE_PREFIX_PATH "${_gcs_auto_qt_root}")
         set(Qt6_DIR "${_gcs_auto_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
+        gcs_pin_qt_package_dirs("${_gcs_auto_qt_root}")
         set(GCS_QT_ROOT_DIR "${_gcs_auto_qt_root}" CACHE INTERNAL "Resolved Qt installation root.")
         set(GCS_QT_RESOLVED_VERSION "${_gcs_auto_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
         set(GCS_QT_SOURCE "system-auto" CACHE INTERNAL "Resolved Qt SDK source.")
@@ -571,6 +595,11 @@ if(NOT GCS_QT_FORCE_DOWNLOAD)
             "falling back to managed Qt ${GCS_QT_VERSION}."
         )
     endif()
+elseif(NOT GCS_QT_FORCE_DOWNLOAD)
+    message(STATUS
+        "System Qt auto-discovery is disabled; using the aqt-managed Qt "
+        "${GCS_QT_VERSION} at ${_gcs_qt_root_dir}."
+    )
 endif()
 
 if(NOT EXISTS "${_gcs_qt_cmake_dir}/Qt6Config.cmake")
@@ -628,6 +657,7 @@ gcs_require_qt_version("${_gcs_qt_cmake_dir}" "${GCS_QT_VERSION}")
 gcs_require_qt_module_configs("${_gcs_qt_root_dir}")
 list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
 set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
+gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}")
 set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
 set(GCS_QT_SOURCE "aqt" CACHE INTERNAL "Resolved Qt SDK source.")
 

@@ -501,6 +501,7 @@ QString formatNameFromSubtype(const GUID& subtype)
     }
     return fourcc.isEmpty() ? QStringLiteral("Video") : fourcc;
 }
+#endif
 
 QString capsMediaTypeForFormat(const QString& format)
 {
@@ -759,6 +760,7 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
     return result;
 }
 
+#ifdef Q_OS_WIN
 UsbCameraMode modeFromMediaType(AM_MEDIA_TYPE* mediaType)
 {
     UsbCameraMode mode;
