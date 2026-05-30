@@ -294,12 +294,14 @@ if(NOT WIN32)
     endif()
 endif()
 
-qt_generate_deploy_app_script(
-    TARGET GCS_player
-    OUTPUT_SCRIPT deploy_script
-    NO_UNSUPPORTED_PLATFORM_ERROR
-)
-install(SCRIPT ${deploy_script})
+if(WIN32 OR APPLE)
+    qt_generate_deploy_app_script(
+        TARGET GCS_player
+        OUTPUT_SCRIPT deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${deploy_script})
+endif()
 
 include(CTest)
 
@@ -324,3 +326,83 @@ if(BUILD_TESTING)
 endif()
 
 qt_finalize_executable(GCS_player)
+
+set(CPACK_PACKAGE_NAME "gcs-player")
+set(CPACK_PACKAGE_VENDOR "KPI")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Qt/GStreamer desktop video receiver")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_CONTACT "GCS_player maintainers")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "GCS_player")
+set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+string(TOLOWER "${CMAKE_SYSTEM_NAME}" GCS_CPACK_SYSTEM_NAME)
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" GCS_CPACK_ARCH_NAME)
+if(NOT GCS_CPACK_ARCH_NAME)
+    set(GCS_CPACK_ARCH_NAME "unknown")
+endif()
+set(CPACK_PACKAGE_FILE_NAME
+    "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${GCS_CPACK_SYSTEM_NAME}-${GCS_CPACK_ARCH_NAME}"
+)
+
+if(UNIX AND NOT APPLE)
+    if(QT6_INSTALL_PREFIX AND QT6_INSTALL_PLUGINS)
+        set(GCS_QT_PLUGIN_DIR "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_PLUGINS}")
+    else()
+        set(GCS_QT_PLUGIN_DIR "${GCS_QT_ROOT_DIR}/plugins")
+    endif()
+
+    set(GCS_BUNDLE_LIBRARY_DIRS
+        "${GSTREAMER_LIBRARY_DIRS}"
+        "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_LIBS}"
+        "${GCS_GSTREAMER_ROOT}/lib"
+    )
+    list(REMOVE_DUPLICATES GCS_BUNDLE_LIBRARY_DIRS)
+    string(REPLACE ";" "|" GCS_BUNDLE_LIBRARY_DIRS_ARG "${GCS_BUNDLE_LIBRARY_DIRS}")
+    string(REPLACE ";" "|" GCS_BUNDLE_GSTREAMER_PLUGINS_ARG "${GCS_REQUIRED_GSTREAMER_PLUGINS}")
+
+    set(GCS_LINUX_PORTABLE_BUNDLE_NAME "${CPACK_PACKAGE_FILE_NAME}-portable")
+    set(GCS_LINUX_PORTABLE_BUNDLE_DIR "${CMAKE_BINARY_DIR}/${GCS_LINUX_PORTABLE_BUNDLE_NAME}")
+    set(GCS_LINUX_PORTABLE_BUNDLE_ARCHIVE
+        "${CMAKE_BINARY_DIR}/${GCS_LINUX_PORTABLE_BUNDLE_NAME}.tar.gz"
+    )
+
+    add_custom_target(linux-portable-bundle
+        COMMAND "${CMAKE_COMMAND}"
+            "-DGCS_BUNDLE_EXECUTABLE=$<TARGET_FILE:GCS_player>"
+            "-DGCS_BUNDLE_DIR=${GCS_LINUX_PORTABLE_BUNDLE_DIR}"
+            "-DGCS_BUNDLE_ARCHIVE=${GCS_LINUX_PORTABLE_BUNDLE_ARCHIVE}"
+            "-DGCS_BUNDLE_QT_PLUGIN_DIR=${GCS_QT_PLUGIN_DIR}"
+            "-DGCS_BUNDLE_GST_INSPECT=${GCS_GST_PREFIX}/bin/gst-inspect-1.0"
+            "-DGCS_BUNDLE_GST_PLUGIN_SCANNER_DIR=${GCS_GST_PLUGIN_SCANNER_DIR}"
+            "-DGCS_BUNDLE_GIO_MODULE_DIR=${GCS_GST_GIO_MODULE_DIR}"
+            "-DGCS_BUNDLE_LIBRARY_DIRS=${GCS_BUNDLE_LIBRARY_DIRS_ARG}"
+            "-DGCS_BUNDLE_GSTREAMER_PLUGINS=${GCS_BUNDLE_GSTREAMER_PLUGINS_ARG}"
+            -P "${PROJECT_SOURCE_DIR}/cmake/BundleLinuxRuntime.cmake"
+        DEPENDS GCS_player
+        BYPRODUCTS
+            "${GCS_LINUX_PORTABLE_BUNDLE_ARCHIVE}"
+        COMMENT "Creating portable Linux runtime bundle"
+        VERBATIM
+    )
+endif()
+
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+elseif(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "GCS_player maintainers")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "video")
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    if(GCS_CPACK_ARCH_NAME MATCHES "^(x86_64|amd64)$")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    elseif(GCS_CPACK_ARCH_NAME MATCHES "^(aarch64|arm64)$")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+    endif()
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "qt6-qpa-plugins, qt6-wayland, gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav"
+    )
+endif()
+
+include(CPack)

@@ -1,51 +1,217 @@
-name: ci
+name: build
 
 on:
+  push:
+    branches:
+      - dev
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - dev
+      - main
+      - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build-and-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            configure_preset: linux-debug
-            build_preset: linux-debug
-            test_preset: linux-debug
-          - os: macos-latest
-            configure_preset: macos-debug
-            build_preset: macos-debug
-            test_preset: macos-debug
-          - os: windows-latest
-            configure_preset: windows-debug
-            build_preset: windows-debug
-            test_preset: windows-debug
+  ubuntu-x64:
+    name: Ubuntu 24.04 x64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
 
-    runs-on: ${{ matrix.os }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            dpkg-dev \
+            file \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            qt6-base-dev \
+            qt6-multimedia-dev \
+            qt6-qpa-plugins \
+            qt6-tools-dev \
+            qt6-tools-dev-tools \
+            qt6-wayland \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-libav
 
+      - name: Configure
+        run: cmake --preset linux-release
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/linux-release --output-on-failure
+
+      - name: Package
+        run: cpack --config build/linux-release/CPackConfig.cmake -G DEB
+
+      - name: Package portable bundle
+        run: cmake --build --preset linux-release --target linux-portable-bundle
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcs-player-ubuntu-24.04-x64
+          path: |
+            build/linux-release/*.deb
+            build/linux-release/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  raspberry-bookworm-arm64:
+    name: Debian Bookworm arm64
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:bookworm
+    steps:
+      - name: Prepare container
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash \
+            ca-certificates \
+            git
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            dpkg-dev \
+            file \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            qt6-base-dev \
+            qt6-multimedia-dev \
+            qt6-qpa-plugins \
+            qt6-tools-dev \
+            qt6-tools-dev-tools \
+            qt6-wayland \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-libav
+
+      - name: Configure
+        run: cmake --preset linux-release
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/linux-release --output-on-failure
+
+      - name: Package
+        run: cpack --config build/linux-release/CPackConfig.cmake -G DEB
+
+      - name: Package portable bundle
+        run: cmake --build --preset linux-release --target linux-portable-bundle
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcs-player-debian-bookworm-arm64
+          path: |
+            build/linux-release/*.deb
+            build/linux-release/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install uv
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           irm https://astral.sh/uv/install.ps1 | iex
           "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure
-        run: cmake --preset ${{ matrix.configure_preset }}
+        run: cmake --preset windows-release
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.build_preset }} --parallel
+        run: cmake --build --preset windows-release --parallel
 
       - name: Test
-        run: ctest --preset ${{ matrix.test_preset }}
+        run: ctest --test-dir build/windows-release -C Release --output-on-failure
+
+      - name: Package
+        run: cpack --config build/windows-release/CPackConfig.cmake -G ZIP -C Release
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcs-player-windows-x64
+          path: build/windows-release/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - ubuntu-x64
+      - raspberry-bookworm-arm64
+      - windows-x64
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t packages < <(find dist -type f \( -name '*.deb' -o -name '*.zip' -o -name '*.tar.gz' \) -print | sort)
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "No packages found under dist" >&2
+            exit 1
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${packages[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${packages[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Automated packages from GitHub Actions."
+          fi
