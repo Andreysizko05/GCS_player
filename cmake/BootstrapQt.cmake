@@ -89,12 +89,29 @@ function(gcs_get_qt_config_dir_from_root root_dir out_var)
     endif()
 
     get_filename_component(_root_dir "${root_dir}" ABSOLUTE)
-    set(_qt_config_dir "${_root_dir}/lib/cmake/Qt6")
-    if(EXISTS "${_qt_config_dir}/Qt6Config.cmake")
-        set(${out_var} "${_qt_config_dir}" PARENT_SCOPE)
-    else()
-        set(${out_var} "" PARENT_SCOPE)
+    set(_candidate_config_dirs
+        "${_root_dir}/lib/cmake/Qt6"
+        "${_root_dir}/lib64/cmake/Qt6"
+    )
+    if(CMAKE_LIBRARY_ARCHITECTURE)
+        list(APPEND _candidate_config_dirs
+            "${_root_dir}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/Qt6"
+        )
     endif()
+    file(GLOB _multiarch_config_dirs LIST_DIRECTORIES TRUE
+        "${_root_dir}/lib/*/cmake/Qt6"
+    )
+    list(APPEND _candidate_config_dirs ${_multiarch_config_dirs})
+    list(REMOVE_DUPLICATES _candidate_config_dirs)
+
+    foreach(_qt_config_dir IN LISTS _candidate_config_dirs)
+        if(EXISTS "${_qt_config_dir}/Qt6Config.cmake")
+            set(${out_var} "${_qt_config_dir}" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+
+    set(${out_var} "" PARENT_SCOPE)
 endfunction()
 
 function(gcs_pin_qt_package_dirs qt_root)
@@ -103,7 +120,19 @@ function(gcs_pin_qt_package_dirs qt_root)
     endif()
 
     get_filename_component(_qt_root "${qt_root}" ABSOLUTE)
-    file(GLOB _qt_package_dirs LIST_DIRECTORIES true "${_qt_root}/lib/cmake/Qt6*")
+    set(_qt_package_dirs)
+    if(ARGC GREATER 1 AND ARGV1)
+        get_filename_component(_qt_config_parent "${ARGV1}/.." ABSOLUTE)
+        file(GLOB _qt_config_sibling_dirs LIST_DIRECTORIES TRUE "${_qt_config_parent}/Qt6*")
+        list(APPEND _qt_package_dirs ${_qt_config_sibling_dirs})
+    endif()
+    file(GLOB _qt_root_package_dirs LIST_DIRECTORIES TRUE
+        "${_qt_root}/lib/cmake/Qt6*"
+        "${_qt_root}/lib64/cmake/Qt6*"
+        "${_qt_root}/lib/*/cmake/Qt6*"
+    )
+    list(APPEND _qt_package_dirs ${_qt_root_package_dirs})
+    list(REMOVE_DUPLICATES _qt_package_dirs)
     foreach(_qt_package_dir IN LISTS _qt_package_dirs)
         get_filename_component(_qt_package_name "${_qt_package_dir}" NAME)
         if(EXISTS "${_qt_package_dir}/${_qt_package_name}Config.cmake")
@@ -172,10 +201,41 @@ endfunction()
 function(gcs_check_qt_module_configs qt_root out_ok out_missing_modules)
     set(_required_modules Widgets LinguistTools Multimedia MultimediaWidgets)
     set(_missing_modules)
+    if(ARGC GREATER 3)
+        set(_qt_config_dir "${ARGV3}")
+    else()
+        set(_qt_config_dir "")
+    endif()
 
     foreach(_module IN LISTS _required_modules)
-        set(_module_config "${qt_root}/lib/cmake/Qt6${_module}/Qt6${_module}Config.cmake")
-        if(NOT EXISTS "${_module_config}")
+        set(_module_configs
+            "${qt_root}/lib/cmake/Qt6${_module}/Qt6${_module}Config.cmake"
+            "${qt_root}/lib64/cmake/Qt6${_module}/Qt6${_module}Config.cmake"
+        )
+        if(_qt_config_dir)
+            list(APPEND _module_configs
+                "${_qt_config_dir}/../Qt6${_module}/Qt6${_module}Config.cmake"
+            )
+        endif()
+        if(CMAKE_LIBRARY_ARCHITECTURE)
+            list(APPEND _module_configs
+                "${qt_root}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/Qt6${_module}/Qt6${_module}Config.cmake"
+            )
+        endif()
+        file(GLOB _multiarch_module_configs
+            "${qt_root}/lib/*/cmake/Qt6${_module}/Qt6${_module}Config.cmake"
+        )
+        list(APPEND _module_configs ${_multiarch_module_configs})
+
+        set(_module_found FALSE)
+        foreach(_module_config IN LISTS _module_configs)
+            if(EXISTS "${_module_config}")
+                set(_module_found TRUE)
+                break()
+            endif()
+        endforeach()
+
+        if(NOT _module_found)
             list(APPEND _missing_modules "Qt6${_module}")
         endif()
     endforeach()
@@ -190,7 +250,12 @@ function(gcs_check_qt_module_configs qt_root out_ok out_missing_modules)
 endfunction()
 
 function(gcs_require_qt_module_configs qt_root)
-    gcs_check_qt_module_configs("${qt_root}" _modules_ok _missing_modules)
+    if(ARGC GREATER 1)
+        set(_qt_config_dir "${ARGV1}")
+    else()
+        set(_qt_config_dir "")
+    endif()
+    gcs_check_qt_module_configs("${qt_root}" _modules_ok _missing_modules "${_qt_config_dir}")
     if(NOT _modules_ok)
         list(JOIN _missing_modules ", " _missing_modules_text)
         message(FATAL_ERROR
@@ -215,7 +280,7 @@ function(gcs_validate_qt_candidate qt_root qt_config_dir minimum_version out_ok 
                 "Qt ${_candidate_version} is below the minimum supported version ${minimum_version}"
             )
         else()
-            gcs_check_qt_module_configs("${qt_root}" _modules_ok _missing_modules)
+            gcs_check_qt_module_configs("${qt_root}" _modules_ok _missing_modules "${qt_config_dir}")
             if(NOT _modules_ok)
                 list(JOIN _missing_modules ", " _missing_modules_text)
                 set(_candidate_reason "missing required modules: ${_missing_modules_text}")
@@ -362,7 +427,18 @@ function(gcs_find_system_qt out_root out_config_dir out_version out_summary)
             "/usr/local/opt/qt"
         )
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        file(GLOB _linux_qt_config_dirs LIST_DIRECTORIES TRUE
+            "/usr/lib/cmake/Qt6"
+            "/usr/lib64/cmake/Qt6"
+            "/usr/lib/*/cmake/Qt6"
+            "/usr/local/lib/cmake/Qt6"
+            "/usr/local/lib64/cmake/Qt6"
+            "/usr/local/lib/*/cmake/Qt6"
+        )
+        list(APPEND _candidate_config_dirs ${_linux_qt_config_dirs})
         list(APPEND _candidate_roots
+            "/usr"
+            "/usr/local"
             "/opt/qt6"
             "/usr/local/opt/qt6"
             "/usr/lib/qt6"
@@ -534,7 +610,7 @@ if(GCS_ALLOW_EXTERNAL_QT)
 
     list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
     set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
-    gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}")
+    gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}" "${_gcs_qt_cmake_dir}")
     set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
     set(GCS_QT_RESOLVED_VERSION "${_gcs_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
     set(GCS_QT_SOURCE "external" CACHE INTERNAL "Resolved Qt SDK source.")
@@ -559,7 +635,7 @@ if(GCS_USE_SYSTEM_QT)
 
     list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
     set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
-    gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}")
+    gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}" "${_gcs_qt_cmake_dir}")
     set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
     set(GCS_QT_RESOLVED_VERSION "${_gcs_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
     set(GCS_QT_SOURCE "system" CACHE INTERNAL "Resolved Qt SDK source.")
@@ -601,7 +677,7 @@ if(NOT GCS_QT_FORCE_DOWNLOAD AND GCS_PREFER_SYSTEM_QT)
     if(_gcs_auto_qt_root AND _gcs_auto_qt_cmake_dir)
         list(PREPEND CMAKE_PREFIX_PATH "${_gcs_auto_qt_root}")
         set(Qt6_DIR "${_gcs_auto_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
-        gcs_pin_qt_package_dirs("${_gcs_auto_qt_root}")
+        gcs_pin_qt_package_dirs("${_gcs_auto_qt_root}" "${_gcs_auto_qt_cmake_dir}")
         set(GCS_QT_ROOT_DIR "${_gcs_auto_qt_root}" CACHE INTERNAL "Resolved Qt installation root.")
         set(GCS_QT_RESOLVED_VERSION "${_gcs_auto_qt_version}" CACHE INTERNAL "Resolved Qt version." FORCE)
         set(GCS_QT_SOURCE "system-auto" CACHE INTERNAL "Resolved Qt SDK source.")
@@ -680,10 +756,10 @@ if(NOT EXISTS "${_gcs_qt_cmake_dir}/Qt6Config.cmake")
 endif()
 
 gcs_require_qt_version("${_gcs_qt_cmake_dir}" "${GCS_QT_VERSION}")
-gcs_require_qt_module_configs("${_gcs_qt_root_dir}")
+gcs_require_qt_module_configs("${_gcs_qt_root_dir}" "${_gcs_qt_cmake_dir}")
 list(PREPEND CMAKE_PREFIX_PATH "${_gcs_qt_root_dir}")
 set(Qt6_DIR "${_gcs_qt_cmake_dir}" CACHE PATH "Path to Qt6Config.cmake" FORCE)
-gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}")
+gcs_pin_qt_package_dirs("${_gcs_qt_root_dir}" "${_gcs_qt_cmake_dir}")
 set(GCS_QT_ROOT_DIR "${_gcs_qt_root_dir}" CACHE INTERNAL "Resolved Qt installation root.")
 set(GCS_QT_SOURCE "aqt" CACHE INTERNAL "Resolved Qt SDK source.")
 

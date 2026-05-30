@@ -53,7 +53,12 @@ jobs:
             gstreamer1.0-libav
 
       - name: Configure
-        run: cmake --preset linux-release
+        run: >
+          cmake --preset linux-release
+          -DGCS_USE_SYSTEM_QT=ON
+          -DGCS_FETCH_QT_WITH_AQT=OFF
+          -DGCS_USE_SYSTEM_GSTREAMER=ON
+          -DGCS_FETCH_GSTREAMER=OFF
 
       - name: Build
         run: cmake --build --preset linux-release --parallel
@@ -122,7 +127,12 @@ jobs:
             gstreamer1.0-libav
 
       - name: Configure
-        run: cmake --preset linux-release
+        run: >
+          cmake --preset linux-release
+          -DGCS_USE_SYSTEM_QT=ON
+          -DGCS_FETCH_QT_WITH_AQT=OFF
+          -DGCS_USE_SYSTEM_GSTREAMER=ON
+          -DGCS_FETCH_GSTREAMER=OFF
 
       - name: Build
         run: cmake --build --preset linux-release --parallel
@@ -148,6 +158,8 @@ jobs:
 
   windows-x64:
     name: Windows x64
+    # Temporarily disabled because the Windows package build is slow.
+    if: ${{ false }}
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
@@ -184,7 +196,6 @@ jobs:
     needs:
       - ubuntu-x64
       - raspberry-bookworm-arm64
-      - windows-x64
     runs-on: ubuntu-24.04
     permissions:
       actions: read

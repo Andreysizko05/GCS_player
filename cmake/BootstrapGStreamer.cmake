@@ -132,6 +132,36 @@ function(gcs_gst_get_checksum platform version output_var)
     endif()
 endfunction()
 
+function(gcs_gst_versions_compatible actual_version expected_version output_var)
+    if("${actual_version}" STREQUAL "${expected_version}")
+        set(${output_var} TRUE PARENT_SCOPE)
+        return()
+    endif()
+
+    if("${actual_version}" MATCHES "^([0-9]+)\\.([0-9]+)\\.")
+        set(_actual_major "${CMAKE_MATCH_1}")
+        set(_actual_minor "${CMAKE_MATCH_2}")
+    else()
+        set(${output_var} FALSE PARENT_SCOPE)
+        return()
+    endif()
+
+    if("${expected_version}" MATCHES "^([0-9]+)\\.([0-9]+)\\.")
+        set(_expected_major "${CMAKE_MATCH_1}")
+        set(_expected_minor "${CMAKE_MATCH_2}")
+    else()
+        set(${output_var} FALSE PARENT_SCOPE)
+        return()
+    endif()
+
+    if("${_actual_major}" STREQUAL "${_expected_major}"
+        AND "${_actual_minor}" STREQUAL "${_expected_minor}")
+        set(${output_var} TRUE PARENT_SCOPE)
+    else()
+        set(${output_var} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
 function(gcs_gst_download url destination_file expected_hash)
     if(EXISTS "${destination_file}")
         if(expected_hash)
@@ -931,10 +961,11 @@ function(gcs_gst_validate_plugins_for_root root_dir expected_version output_ok o
                 endif()
 
                 set(_plugin_version "${CMAKE_MATCH_1}")
-                if(NOT "${_plugin_version}" STREQUAL "${expected_version}")
+                gcs_gst_versions_compatible("${_plugin_version}" "${expected_version}" _plugin_version_ok)
+                if(NOT _plugin_version_ok)
                     set(_validation_reason
                         "required plugin '${_plugin}' resolved to version ${_plugin_version}, "
-                        "expected ${expected_version}"
+                        "expected ${expected_version} or the same major.minor release"
                     )
                     set(_all_plugins_ok FALSE)
                     break()
@@ -1505,10 +1536,14 @@ function(gcs_verify_gstreamer_plugins)
         endif()
 
         set(_plugin_version "${CMAKE_MATCH_1}")
-        if(NOT "${_plugin_version}" STREQUAL "${_expected_gstreamer_version}")
+        gcs_gst_versions_compatible(
+            "${_plugin_version}" "${_expected_gstreamer_version}" _plugin_version_ok
+        )
+        if(NOT _plugin_version_ok)
             message(FATAL_ERROR
                 "GStreamer plugin '${_plugin}' has an incompatible version.\n"
-                "Expected: ${_expected_gstreamer_version} for Qt ${GCS_QT_RESOLVED_VERSION}\n"
+                "Expected: ${_expected_gstreamer_version} or the same major.minor release "
+                "for Qt ${GCS_QT_RESOLVED_VERSION}\n"
                 "Found:    ${_plugin_version}\n"
                 "Plugin source: ${_gst_pluginsdir}"
             )
