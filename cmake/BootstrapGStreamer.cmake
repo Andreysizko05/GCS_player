@@ -21,11 +21,25 @@ set(GCS_EXTERNAL_GSTREAMER_ROOT "" CACHE PATH
 )
 set(GCS_GSTREAMER_ROOT "" CACHE PATH "Resolved GStreamer SDK/runtime root.")
 set(GCS_REQUIRED_GSTREAMER_PLUGINS
-    "coreelements;app;udp;rtpmanager;rtp;mpegtsdemux;videoparsersbad;playback;videoconvertscale;libav"
+    "coreelements;app;udp;tcp;rtpmanager;rtp;rtsp;mpegtsdemux;videoparsersbad;playback;videoconvertscale;libav"
     CACHE STRING "GStreamer plugin names required by the video receiver."
 )
 if(NOT "mpegtsdemux" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
     list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "mpegtsdemux")
+    set(GCS_REQUIRED_GSTREAMER_PLUGINS
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+        CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
+    )
+endif()
+if(NOT "tcp" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
+    list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "tcp")
+    set(GCS_REQUIRED_GSTREAMER_PLUGINS
+        "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
+        CACHE STRING "GStreamer plugin names required by the video receiver." FORCE
+    )
+endif()
+if(NOT "rtsp" IN_LIST GCS_REQUIRED_GSTREAMER_PLUGINS)
+    list(APPEND GCS_REQUIRED_GSTREAMER_PLUGINS "rtsp")
     set(GCS_REQUIRED_GSTREAMER_PLUGINS
         "${GCS_REQUIRED_GSTREAMER_PLUGINS}"
         CACHE STRING "GStreamer plugin names required by the video receiver." FORCE

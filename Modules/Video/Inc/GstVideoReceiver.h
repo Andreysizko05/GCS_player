@@ -23,6 +23,9 @@ public:
     enum class Transport {
         UdpRtp,
         UdpMpegTs,
+        Rtsp,
+        TcpMpegTs,
+        CustomPipeline,
         UsbCamera
     };
 
@@ -36,6 +39,8 @@ public:
         Codec codec = Codec::H264;
         QString udpHost = QStringLiteral("0.0.0.0");
         quint16 udpPort = 5600;
+        QString streamUrl;
+        QString customPipeline;
         bool lowLatency = false;
         int rtpPayload = 96;
         int rtpClockRate = 90000;
@@ -69,12 +74,14 @@ protected:
     void run() override;
 
 private:
+    bool createCustomPipeline();
     bool createPipeline();
     void destroyPipeline();
     bool processBusMessages();
     GstFlowReturn processSample(GstAppSink* sink);
 
     static GstFlowReturn onNewSample(GstAppSink* sink, gpointer userData);
+    static void onRtspPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
     static void onTsDemuxPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
     static void onDecoderPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
 
@@ -87,6 +94,8 @@ private:
 
     GstElement* m_pipeline = nullptr;
     GstElement* m_udpSource = nullptr;
+    GstElement* m_tcpSource = nullptr;
+    GstElement* m_rtspSource = nullptr;
     GstElement* m_usbSource = nullptr;
     GstElement* m_usbCapsFilter = nullptr;
     GstElement* m_jitterBuffer = nullptr;

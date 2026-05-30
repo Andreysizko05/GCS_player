@@ -17,6 +17,12 @@ QString transportName(GstVideoReceiver::Transport transport)
     switch (transport) {
     case GstVideoReceiver::Transport::UsbCamera:
         return QStringLiteral("usb-camera");
+    case GstVideoReceiver::Transport::CustomPipeline:
+        return QStringLiteral("custom-pipeline");
+    case GstVideoReceiver::Transport::TcpMpegTs:
+        return QStringLiteral("tcp-mpeg-ts");
+    case GstVideoReceiver::Transport::Rtsp:
+        return QStringLiteral("rtsp");
     case GstVideoReceiver::Transport::UdpMpegTs:
         return QStringLiteral("udp-mpeg-ts");
     case GstVideoReceiver::Transport::UdpRtp:
@@ -30,6 +36,15 @@ GstVideoReceiver::Transport transportFromName(const QString& name)
 {
     if (name.compare(QStringLiteral("usb-camera"), Qt::CaseInsensitive) == 0) {
         return GstVideoReceiver::Transport::UsbCamera;
+    }
+    if (name.compare(QStringLiteral("custom-pipeline"), Qt::CaseInsensitive) == 0) {
+        return GstVideoReceiver::Transport::CustomPipeline;
+    }
+    if (name.compare(QStringLiteral("tcp-mpeg-ts"), Qt::CaseInsensitive) == 0) {
+        return GstVideoReceiver::Transport::TcpMpegTs;
+    }
+    if (name.compare(QStringLiteral("rtsp"), Qt::CaseInsensitive) == 0) {
+        return GstVideoReceiver::Transport::Rtsp;
     }
     if (name.compare(QStringLiteral("udp-mpeg-ts"), Qt::CaseInsensitive) == 0) {
         return GstVideoReceiver::Transport::UdpMpegTs;
@@ -133,6 +148,8 @@ VideoSettingsConfig::LoadResult VideoSettingsConfig::loadOrCreate() const
     }
 
     result.settings.port = portFromValue(config.value(QStringLiteral("port")), result.settings.port);
+    result.settings.streamUrl = config.value(QStringLiteral("streamUrl")).toString().trimmed();
+    result.settings.customPipeline = config.value(QStringLiteral("customPipeline")).toString().trimmed();
 
     const QJsonValue lowLatencyValue = config.value(QStringLiteral("lowLatency"));
     if (lowLatencyValue.isBool()) {
@@ -175,6 +192,8 @@ bool VideoSettingsConfig::save(const Settings& settings, QString* errorMessage) 
     config.insert(QStringLiteral("codec"), codecName(settings.codec));
     config.insert(QStringLiteral("bindAddress"), settings.bindAddress.trimmed());
     config.insert(QStringLiteral("port"), settings.port);
+    config.insert(QStringLiteral("streamUrl"), settings.streamUrl.trimmed());
+    config.insert(QStringLiteral("customPipeline"), settings.customPipeline.trimmed());
     config.insert(QStringLiteral("lowLatency"), settings.lowLatency);
     config.insert(QStringLiteral("usbDeviceId"), settings.usbDeviceId);
     config.insert(QStringLiteral("usbDeviceName"), settings.usbDeviceName);

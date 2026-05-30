@@ -15,6 +15,8 @@ public:
         GstVideoReceiver::Codec codec = GstVideoReceiver::Codec::H264;
         QString bindAddress = QStringLiteral("0.0.0.0");
         quint16 port = 5600;
+        QString streamUrl;
+        QString customPipeline;
         bool lowLatency = false;
         QString usbDeviceId;
         QString usbDeviceName;

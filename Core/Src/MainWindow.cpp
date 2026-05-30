@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -28,6 +29,12 @@ int containerIndexFromTransport(GstVideoReceiver::Transport transport)
 {
     switch (transport) {
     case GstVideoReceiver::Transport::UsbCamera:
+        return 5;
+    case GstVideoReceiver::Transport::CustomPipeline:
+        return 4;
+    case GstVideoReceiver::Transport::TcpMpegTs:
+        return 3;
+    case GstVideoReceiver::Transport::Rtsp:
         return 2;
     case GstVideoReceiver::Transport::UdpMpegTs:
         return 1;
@@ -40,8 +47,17 @@ int containerIndexFromTransport(GstVideoReceiver::Transport transport)
 
 GstVideoReceiver::Transport transportFromContainerIndex(int index)
 {
-    if (index == 2) {
+    if (index == 5) {
         return GstVideoReceiver::Transport::UsbCamera;
+    }
+    if (index == 4) {
+        return GstVideoReceiver::Transport::CustomPipeline;
+    }
+    if (index == 3) {
+        return GstVideoReceiver::Transport::TcpMpegTs;
+    }
+    if (index == 2) {
+        return GstVideoReceiver::Transport::Rtsp;
     }
     if (index == 1) {
         return GstVideoReceiver::Transport::UdpMpegTs;
@@ -74,7 +90,12 @@ VideoSettingsConfig::Settings videoSettingsFromUi(const Ui::MainWindow* ui)
     VideoSettingsConfig::Settings settings;
     settings.transport = transportFromContainerIndex(ui->videoContainerComboBox->currentIndex());
     settings.codec = codecFromCodecIndex(ui->videoCodecComboBox->currentIndex());
-    settings.bindAddress = ui->videoAddressLineEdit->text().trimmed();
+    const QString address = ui->videoAddressLineEdit->text().trimmed();
+    if (settings.transport == GstVideoReceiver::Transport::Rtsp) {
+        settings.streamUrl = address;
+    } else {
+        settings.bindAddress = address;
+    }
     if (settings.bindAddress.isEmpty()) {
         settings.bindAddress = QStringLiteral("0.0.0.0");
     }
@@ -87,7 +108,11 @@ void applyVideoSettingsToUi(Ui::MainWindow* ui, const VideoSettingsConfig::Setti
 {
     ui->videoContainerComboBox->setCurrentIndex(containerIndexFromTransport(settings.transport));
     ui->videoCodecComboBox->setCurrentIndex(codecIndexFromCodec(settings.codec));
-    ui->videoAddressLineEdit->setText(settings.bindAddress);
+    ui->videoAddressLineEdit->setText(
+        settings.transport == GstVideoReceiver::Transport::Rtsp
+            ? settings.streamUrl
+            : settings.bindAddress
+    );
     ui->videoPortSpinBox->setValue(settings.port);
     ui->lowLatencyCheckBox->setChecked(settings.lowLatency);
 }
@@ -123,9 +148,15 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupVideoSettingsUi()
 {
-    if (ui->videoContainerComboBox->count() < 3) {
-        ui->videoContainerComboBox->addItem(QStringLiteral("USB Camera"));
-    }
+    ui->videoContainerComboBox->clear();
+    ui->videoContainerComboBox->addItem(QStringLiteral("RTP over UDP"));
+    ui->videoContainerComboBox->addItem(QStringLiteral("MPEG-TS over UDP (auto)"));
+    ui->videoContainerComboBox->addItem(QStringLiteral("RTSP"));
+    ui->videoContainerComboBox->addItem(QStringLiteral("MPEG-TS over TCP"));
+    ui->videoContainerComboBox->addItem(QStringLiteral("Custom GStreamer"));
+    ui->videoContainerComboBox->addItem(QStringLiteral("USB Camera"));
+
+    setupCustomPipelineUi();
     setupUsbSettingsUi();
 
     connect(ui->applyVideoSettingsButton, &QPushButton::clicked, this, &MainWindow::applyVideoSettings);
@@ -136,6 +167,18 @@ void MainWindow::setupVideoSettingsUi()
         &MainWindow::onVideoContainerChanged
     );
     onVideoContainerChanged(ui->videoContainerComboBox->currentIndex());
+}
+
+void MainWindow::setupCustomPipelineUi()
+{
+    mCustomPipelineTextEdit = new QPlainTextEdit(ui->videoSettingsDockContents);
+    mCustomPipelineTextEdit->setMinimumHeight(96);
+    mCustomPipelineTextEdit->setPlaceholderText(QStringLiteral(
+        "rtspsrc location=rtsp://192.168.144.25:8554/main.264 latency=25 ! "
+        "application/x-rtp ! decodebin3 ! videoconvert ! "
+        "video/x-raw,format=BGRA ! appsink name=preview-sink"
+    ));
+    ui->videoSettingsFormLayout->addRow(QStringLiteral("Pipeline"), mCustomPipelineTextEdit);
 }
 
 void MainWindow::setupUsbSettingsUi()
@@ -189,6 +232,9 @@ void MainWindow::loadVideoSettings()
     const VideoSettingsConfig config;
     const VideoSettingsConfig::LoadResult result = config.loadOrCreate();
     applyVideoSettingsToUi(ui, result.settings);
+    if (mCustomPipelineTextEdit != nullptr) {
+        mCustomPipelineTextEdit->setPlainText(result.settings.customPipeline);
+    }
     refreshUsbDevices(result.settings.usbDeviceId);
     refreshUsbModes(result.settings.usbModeCaps);
     refreshUsbControls(result.settings.usbControls);
@@ -216,6 +262,9 @@ VideoSettingsConfig::Settings MainWindow::currentVideoSettings() const
     settings.usbDeviceIndex = selectedUsbDeviceIndex();
     settings.usbModeCaps = selectedUsbModeCaps();
     settings.usbControls = usbControlStatesFromUi();
+    if (mCustomPipelineTextEdit != nullptr) {
+        settings.customPipeline = mCustomPipelineTextEdit->toPlainText().trimmed();
+    }
     return settings;
 }
 
@@ -475,13 +524,19 @@ void MainWindow::restartVideoReceiver()
     }
 
     const VideoSettingsConfig::Settings videoSettings = currentVideoSettings();
-    ui->videoAddressLineEdit->setText(videoSettings.bindAddress);
+    ui->videoAddressLineEdit->setText(
+        videoSettings.transport == GstVideoReceiver::Transport::Rtsp
+            ? videoSettings.streamUrl
+            : videoSettings.bindAddress
+    );
 
     GstVideoReceiver::StreamSettings settings;
     settings.transport = videoSettings.transport;
     settings.codec = videoSettings.codec;
     settings.udpHost = videoSettings.bindAddress;
     settings.udpPort = videoSettings.port;
+    settings.streamUrl = videoSettings.streamUrl;
+    settings.customPipeline = videoSettings.customPipeline;
     settings.lowLatency = videoSettings.lowLatency;
     settings.usbDeviceId = videoSettings.usbDeviceId;
     settings.usbDeviceName = videoSettings.usbDeviceName;
@@ -523,19 +578,40 @@ void MainWindow::onVideoContainerChanged(int index)
 {
     const GstVideoReceiver::Transport transport = transportFromContainerIndex(index);
     const bool rtpSelected = transport == GstVideoReceiver::Transport::UdpRtp;
-    const bool udpSelected = transport == GstVideoReceiver::Transport::UdpRtp
-        || transport == GstVideoReceiver::Transport::UdpMpegTs;
+    const bool rtspSelected = transport == GstVideoReceiver::Transport::Rtsp;
+    const bool tcpSelected = transport == GstVideoReceiver::Transport::TcpMpegTs;
+    const bool networkSelected = transport == GstVideoReceiver::Transport::UdpRtp
+        || transport == GstVideoReceiver::Transport::UdpMpegTs
+        || rtspSelected
+        || tcpSelected;
+    const bool customSelected = transport == GstVideoReceiver::Transport::CustomPipeline;
     const bool usbSelected = transport == GstVideoReceiver::Transport::UsbCamera;
 
     ui->videoCodecComboBox->setEnabled(rtpSelected);
     ui->videoCodecLabel->setEnabled(rtpSelected);
-    ui->videoCodecComboBox->setVisible(!usbSelected);
-    ui->videoCodecLabel->setVisible(!usbSelected);
-    ui->videoAddressLineEdit->setVisible(udpSelected);
-    ui->videoAddressLabel->setVisible(udpSelected);
-    ui->videoPortSpinBox->setVisible(udpSelected);
-    ui->videoPortLabel->setVisible(udpSelected);
-    ui->lowLatencyCheckBox->setVisible(udpSelected);
+    ui->videoCodecComboBox->setVisible(rtpSelected);
+    ui->videoCodecLabel->setVisible(rtpSelected);
+    ui->videoAddressLineEdit->setVisible(networkSelected);
+    ui->videoAddressLabel->setVisible(networkSelected);
+    ui->videoPortSpinBox->setVisible(networkSelected && !rtspSelected);
+    ui->videoPortLabel->setVisible(networkSelected && !rtspSelected);
+    ui->lowLatencyCheckBox->setVisible(networkSelected);
+
+    if (rtspSelected) {
+        ui->videoAddressLabel->setText(QStringLiteral("RTSP URL"));
+    } else if (tcpSelected) {
+        ui->videoAddressLabel->setText(QStringLiteral("Host"));
+    } else {
+        ui->videoAddressLabel->setText(QStringLiteral("Bind Address"));
+    }
+    ui->videoPortLabel->setText(tcpSelected ? QStringLiteral("TCP Port") : QStringLiteral("UDP Port"));
+
+    if (mCustomPipelineTextEdit != nullptr) {
+        mCustomPipelineTextEdit->setVisible(customSelected);
+        if (ui->videoSettingsFormLayout->labelForField(mCustomPipelineTextEdit) != nullptr) {
+            ui->videoSettingsFormLayout->labelForField(mCustomPipelineTextEdit)->setVisible(customSelected);
+        }
+    }
 
     if (mUsbCameraComboBox != nullptr) {
         QWidget* cameraField = mUsbCameraComboBox->parentWidget();

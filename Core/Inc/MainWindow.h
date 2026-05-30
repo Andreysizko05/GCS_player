@@ -21,6 +21,7 @@ class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QGroupBox;
+class QPlainTextEdit;
 class QPushButton;
 class QSlider;
 class QSpinBox;
@@ -41,6 +42,7 @@ private:
     bool saveVideoSettings() const;
     void ensureVideoWidget();
     void restartVideoReceiver();
+    void setupCustomPipelineUi();
     void setupUsbSettingsUi();
     void refreshUsbDevices(const QString& preferredDeviceId = QString());
     void refreshUsbModes(const QString& preferredModeCaps = QString());
@@ -77,6 +79,7 @@ private:
     QVideoWidget* mVideoWidget = nullptr;
     QComboBox* mUsbCameraComboBox = nullptr;
     QComboBox* mUsbModeComboBox = nullptr;
+    QPlainTextEdit* mCustomPipelineTextEdit = nullptr;
     QPushButton* mRefreshUsbDevicesButton = nullptr;
     QGroupBox* mUsbControlsGroupBox = nullptr;
     QFormLayout* mUsbControlsLayout = nullptr;
