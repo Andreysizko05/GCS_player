@@ -8,6 +8,7 @@
 #include <QMetaType>
 #include <QPainter>
 #include <QStringList>
+#include <QVideoFrameFormat>
 
 #include <gst/video/video-info.h>
 
@@ -117,7 +118,40 @@ const char* parserFactory(GstVideoReceiver::Codec codec)
 QVideoFrame imageToVideoFrame(const QImage& image)
 {
     const QImage source = image.convertToFormat(QImage::Format_ARGB32);
-    return QVideoFrame(source);
+    const QVideoFrameFormat::PixelFormat pixelFormat =
+        QVideoFrameFormat::pixelFormatFromImageFormat(source.format());
+    if (pixelFormat == QVideoFrameFormat::Format_Invalid) {
+        return {};
+    }
+
+    QVideoFrameFormat format(source.size(), pixelFormat);
+    format.setScanLineDirection(QVideoFrameFormat::TopToBottom);
+
+    QVideoFrame frame(format);
+    if (!frame.isValid() || !frame.map(QVideoFrame::WriteOnly)) {
+        return {};
+    }
+
+    const qsizetype sourceStride = source.bytesPerLine();
+    const int destinationStride = frame.bytesPerLine(0);
+    const qsizetype rowBytes = std::min(sourceStride, static_cast<qsizetype>(destinationStride));
+    const uchar* sourceBits = source.constBits();
+    uchar* destinationBits = frame.bits(0);
+    if (sourceBits == nullptr || destinationBits == nullptr || sourceStride <= 0 || rowBytes <= 0) {
+        frame.unmap();
+        return {};
+    }
+
+    for (int y = 0; y < source.height(); ++y) {
+        std::memcpy(
+            destinationBits + y * destinationStride,
+            sourceBits + y * sourceStride,
+            static_cast<size_t>(rowBytes)
+        );
+    }
+
+    frame.unmap();
+    return frame;
 }
 
 QString createMessageText(const QString& line)
@@ -851,7 +885,7 @@ GstFlowReturn GstVideoReceiver::processSample(GstAppSink* sink)
     gst_buffer_unmap(buffer, &mapInfo);
     gst_sample_unref(sample);
 
-    QVideoFrame frame(image);
+    QVideoFrame frame = imageToVideoFrame(image);
     if (!frame.isValid()) {
         return GST_FLOW_OK;
     }
