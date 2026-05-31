@@ -23,6 +23,10 @@ public:
         int usbDeviceIndex = -1;
         QString usbModeCaps;
         QMap<QString, UsbCameraControlState> usbControls;
+        bool recordingEnabled = false;
+        GstVideoReceiver::RecordingContainer recordingContainer = GstVideoReceiver::RecordingContainer::Matroska;
+        QString recordingDirectory;
+        int recordingBitrateKbps = 8000;
     };
 
     struct LoadResult {

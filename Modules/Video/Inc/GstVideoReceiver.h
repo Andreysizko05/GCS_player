@@ -1,6 +1,7 @@
 #ifndef GSTVIDEORECEIVER_H
 #define GSTVIDEORECEIVER_H
 
+#include "GstVideoRecorder.h"
 #include "UsbCameraManager.h"
 
 #include <QMap>
@@ -34,6 +35,8 @@ public:
         H265
     };
 
+    using RecordingContainer = GstVideoRecorder::Container;
+
     struct StreamSettings {
         Transport transport = Transport::UdpRtp;
         Codec codec = Codec::H264;
@@ -55,6 +58,10 @@ public:
         int usbDeviceIndex = -1;
         QString usbModeCaps;
         QMap<QString, UsbCameraControlState> usbControls;
+        bool recordingEnabled = false;
+        RecordingContainer recordingContainer = RecordingContainer::Matroska;
+        QString recordingDirectory;
+        int recordingBitrateKbps = 8000;
     };
 
     explicit GstVideoReceiver(QObject* parent = nullptr);
@@ -74,18 +81,27 @@ protected:
     void run() override;
 
 private:
+    using EncodedVideoKind = GstVideoRecorder::EncodedVideoKind;
+
     bool createCustomPipeline();
     bool createPipeline();
     void destroyPipeline();
+    void finalizeRecording();
     bool processBusMessages();
     GstFlowReturn processSample(GstAppSink* sink);
+    bool attachEncodedRecordingBranch(GstElement* tee, EncodedVideoKind kind);
+    bool attachRawRecordingBranch(GstElement* tee);
+    bool createDynamicRtspReceiveChain(GstPad* sourcePad, GstCaps* caps);
+    bool linkDynamicEncodedPad(GstPad* sourcePad, GstCaps* caps);
 
     static GstFlowReturn onNewSample(GstAppSink* sink, gpointer userData);
     static void onRtspPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
     static void onTsDemuxPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
+    static void onEncodedPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
     static void onDecoderPadAdded(GstElement* src, GstPad* newPad, gpointer userData);
 
     StreamSettings m_settings;
+    GstVideoRecorder m_recorder;
     std::atomic_bool m_stopRequested{false};
     std::atomic_bool m_seenFrame{false};
     std::atomic<qint64> m_lastFrameTimestampMs{0};
@@ -102,12 +118,15 @@ private:
     GstElement* m_depayloader = nullptr;
     GstElement* m_parser = nullptr;
     GstElement* m_tsDemux = nullptr;
+    GstElement* m_parseBin = nullptr;
+    GstElement* m_recordTee = nullptr;
     GstElement* m_decodeQueue = nullptr;
     GstElement* m_decoder = nullptr;
     GstElement* m_videoConvert = nullptr;
     GstElement* m_videoCapsFilter = nullptr;
     GstElement* m_appSink = nullptr;
     GstBus* m_bus = nullptr;
+    std::atomic_bool m_restartRequested{false};
 };
 
 #endif // GSTVIDEORECEIVER_H

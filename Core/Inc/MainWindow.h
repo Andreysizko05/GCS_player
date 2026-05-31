@@ -21,6 +21,7 @@ class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QGroupBox;
+class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QSlider;
@@ -44,6 +45,7 @@ private:
     void restartVideoReceiver();
     void setupCustomPipelineUi();
     void setupUsbSettingsUi();
+    void setupRecordingSettingsUi();
     void refreshUsbDevices(const QString& preferredDeviceId = QString());
     void refreshUsbModes(const QString& preferredModeCaps = QString());
     void refreshUsbControls(const QMap<QString, UsbCameraControlState>& preferredStates = {});
@@ -62,6 +64,7 @@ private slots:
     void onVideoContainerChanged(int index);
     void onUsbCameraChanged(int index);
     void onRefreshUsbDevicesClicked();
+    void onBrowseRecordingDirectoryClicked();
     void onVideoFrameReady(const QVideoFrame& frame);
     void onVideoSizeChanged(const QSize& size);
     void onVideoReceiverMessage(const QString& message);
@@ -79,6 +82,10 @@ private:
     QVideoWidget* mVideoWidget = nullptr;
     QComboBox* mUsbCameraComboBox = nullptr;
     QComboBox* mUsbModeComboBox = nullptr;
+    QCheckBox* mRecordingEnabledCheckBox = nullptr;
+    QComboBox* mRecordingContainerComboBox = nullptr;
+    QLineEdit* mRecordingDirectoryLineEdit = nullptr;
+    QPushButton* mBrowseRecordingDirectoryButton = nullptr;
     QPlainTextEdit* mCustomPipelineTextEdit = nullptr;
     QPushButton* mRefreshUsbDevicesButton = nullptr;
     QGroupBox* mUsbControlsGroupBox = nullptr;

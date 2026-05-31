@@ -6,6 +6,9 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -16,6 +19,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QWidget>
 #include <QtMultimedia/QVideoSink>
@@ -83,6 +87,28 @@ GstVideoReceiver::Codec codecFromCodecIndex(int index)
     return index == 1
         ? GstVideoReceiver::Codec::H265
         : GstVideoReceiver::Codec::H264;
+}
+
+int recordingContainerIndexFromContainer(GstVideoReceiver::RecordingContainer container)
+{
+    return container == GstVideoReceiver::RecordingContainer::Mp4 ? 1 : 0;
+}
+
+GstVideoReceiver::RecordingContainer recordingContainerFromIndex(int index)
+{
+    return index == 1
+        ? GstVideoReceiver::RecordingContainer::Mp4
+        : GstVideoReceiver::RecordingContainer::Matroska;
+}
+
+QString defaultRecordingDirectory()
+{
+    QString moviesPath = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    if (moviesPath.isEmpty()) {
+        moviesPath = QCoreApplication::applicationDirPath();
+    }
+
+    return QDir(moviesPath).filePath(QStringLiteral("GCS_player"));
 }
 
 VideoSettingsConfig::Settings videoSettingsFromUi(const Ui::MainWindow* ui)
@@ -158,6 +184,7 @@ void MainWindow::setupVideoSettingsUi()
 
     setupCustomPipelineUi();
     setupUsbSettingsUi();
+    setupRecordingSettingsUi();
 
     connect(ui->applyVideoSettingsButton, &QPushButton::clicked, this, &MainWindow::applyVideoSettings);
     connect(
@@ -227,6 +254,36 @@ void MainWindow::setupUsbSettingsUi()
     refreshUsbDevices();
 }
 
+void MainWindow::setupRecordingSettingsUi()
+{
+    mRecordingEnabledCheckBox = new QCheckBox(QStringLiteral("Record"), ui->videoSettingsDockContents);
+    ui->videoSettingsFormLayout->addRow(QStringLiteral("Recording"), mRecordingEnabledCheckBox);
+
+    mRecordingContainerComboBox = new QComboBox(ui->videoSettingsDockContents);
+    mRecordingContainerComboBox->addItem(QStringLiteral("MKV"), static_cast<int>(GstVideoReceiver::RecordingContainer::Matroska));
+    mRecordingContainerComboBox->addItem(QStringLiteral("MP4"), static_cast<int>(GstVideoReceiver::RecordingContainer::Mp4));
+    ui->videoSettingsFormLayout->addRow(QStringLiteral("File Type"), mRecordingContainerComboBox);
+
+    mRecordingDirectoryLineEdit = new QLineEdit(ui->videoSettingsDockContents);
+    mRecordingDirectoryLineEdit->setText(defaultRecordingDirectory());
+
+    mBrowseRecordingDirectoryButton = new QPushButton(QStringLiteral("Browse"), ui->videoSettingsDockContents);
+
+    auto* directoryField = new QWidget(ui->videoSettingsDockContents);
+    auto* directoryLayout = new QHBoxLayout(directoryField);
+    directoryLayout->setContentsMargins(0, 0, 0, 0);
+    directoryLayout->addWidget(mRecordingDirectoryLineEdit, 1);
+    directoryLayout->addWidget(mBrowseRecordingDirectoryButton);
+    ui->videoSettingsFormLayout->addRow(QStringLiteral("Folder"), directoryField);
+
+    connect(
+        mBrowseRecordingDirectoryButton,
+        &QPushButton::clicked,
+        this,
+        &MainWindow::onBrowseRecordingDirectoryClicked
+    );
+}
+
 void MainWindow::loadVideoSettings()
 {
     const VideoSettingsConfig config;
@@ -234,6 +291,21 @@ void MainWindow::loadVideoSettings()
     applyVideoSettingsToUi(ui, result.settings);
     if (mCustomPipelineTextEdit != nullptr) {
         mCustomPipelineTextEdit->setPlainText(result.settings.customPipeline);
+    }
+    if (mRecordingEnabledCheckBox != nullptr) {
+        mRecordingEnabledCheckBox->setChecked(result.settings.recordingEnabled);
+    }
+    if (mRecordingContainerComboBox != nullptr) {
+        mRecordingContainerComboBox->setCurrentIndex(
+            recordingContainerIndexFromContainer(result.settings.recordingContainer)
+        );
+    }
+    if (mRecordingDirectoryLineEdit != nullptr) {
+        mRecordingDirectoryLineEdit->setText(
+            result.settings.recordingDirectory.isEmpty()
+                ? defaultRecordingDirectory()
+                : result.settings.recordingDirectory
+        );
     }
     refreshUsbDevices(result.settings.usbDeviceId);
     refreshUsbModes(result.settings.usbModeCaps);
@@ -264,6 +336,15 @@ VideoSettingsConfig::Settings MainWindow::currentVideoSettings() const
     settings.usbControls = usbControlStatesFromUi();
     if (mCustomPipelineTextEdit != nullptr) {
         settings.customPipeline = mCustomPipelineTextEdit->toPlainText().trimmed();
+    }
+    if (mRecordingEnabledCheckBox != nullptr) {
+        settings.recordingEnabled = mRecordingEnabledCheckBox->isChecked();
+    }
+    if (mRecordingContainerComboBox != nullptr) {
+        settings.recordingContainer = recordingContainerFromIndex(mRecordingContainerComboBox->currentIndex());
+    }
+    if (mRecordingDirectoryLineEdit != nullptr) {
+        settings.recordingDirectory = mRecordingDirectoryLineEdit->text().trimmed();
     }
     return settings;
 }
@@ -543,6 +624,10 @@ void MainWindow::restartVideoReceiver()
     settings.usbDeviceIndex = videoSettings.usbDeviceIndex;
     settings.usbModeCaps = videoSettings.usbModeCaps;
     settings.usbControls = videoSettings.usbControls;
+    settings.recordingEnabled = videoSettings.recordingEnabled;
+    settings.recordingContainer = videoSettings.recordingContainer;
+    settings.recordingDirectory = videoSettings.recordingDirectory;
+    settings.recordingBitrateKbps = videoSettings.recordingBitrateKbps;
 
     mVideoSize = QSize();
     ui->detectedResolutionValueLabel->setText(QStringLiteral("Auto"));
@@ -646,6 +731,21 @@ void MainWindow::onUsbCameraChanged(int index)
 void MainWindow::onRefreshUsbDevicesClicked()
 {
     refreshUsbDevices(selectedUsbDeviceId());
+}
+
+void MainWindow::onBrowseRecordingDirectoryClicked()
+{
+    const QString currentPath = mRecordingDirectoryLineEdit != nullptr
+        ? mRecordingDirectoryLineEdit->text().trimmed()
+        : QString();
+    const QString selectedPath = QFileDialog::getExistingDirectory(
+        this,
+        QStringLiteral("Select Recording Folder"),
+        currentPath.isEmpty() ? defaultRecordingDirectory() : currentPath
+    );
+    if (!selectedPath.isEmpty() && mRecordingDirectoryLineEdit != nullptr) {
+        mRecordingDirectoryLineEdit->setText(selectedPath);
+    }
 }
 
 void MainWindow::onVideoSizeChanged(const QSize& size)

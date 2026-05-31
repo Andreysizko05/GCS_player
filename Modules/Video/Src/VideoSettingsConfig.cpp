@@ -72,6 +72,20 @@ GstVideoReceiver::Codec codecFromName(const QString& name)
         : GstVideoReceiver::Codec::H264;
 }
 
+QString recordingContainerName(GstVideoReceiver::RecordingContainer container)
+{
+    return container == GstVideoReceiver::RecordingContainer::Mp4
+        ? QStringLiteral("mp4")
+        : QStringLiteral("mkv");
+}
+
+GstVideoReceiver::RecordingContainer recordingContainerFromName(const QString& name)
+{
+    return name.compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0
+        ? GstVideoReceiver::RecordingContainer::Mp4
+        : GstVideoReceiver::RecordingContainer::Matroska;
+}
+
 quint16 portFromValue(const QJsonValue& value, quint16 fallback)
 {
     if (!value.isDouble()) {
@@ -160,6 +174,14 @@ VideoSettingsConfig::LoadResult VideoSettingsConfig::loadOrCreate() const
     result.settings.usbDeviceName = config.value(QStringLiteral("usbDeviceName")).toString();
     result.settings.usbDeviceIndex = config.value(QStringLiteral("usbDeviceIndex")).toInt(-1);
     result.settings.usbModeCaps = config.value(QStringLiteral("usbModeCaps")).toString();
+    result.settings.recordingEnabled = config.value(QStringLiteral("recordingEnabled")).toBool(false);
+    result.settings.recordingContainer = recordingContainerFromName(
+        config.value(QStringLiteral("recordingContainer")).toString()
+    );
+    result.settings.recordingDirectory = config.value(QStringLiteral("recordingDirectory")).toString().trimmed();
+    result.settings.recordingBitrateKbps = config.value(QStringLiteral("recordingBitrateKbps")).toInt(
+        result.settings.recordingBitrateKbps
+    );
     const QJsonObject usbControls = config.value(QStringLiteral("usbControls")).toObject();
     for (auto it = usbControls.begin(); it != usbControls.end(); ++it) {
         if (!it.value().isObject()) {
@@ -199,6 +221,10 @@ bool VideoSettingsConfig::save(const Settings& settings, QString* errorMessage) 
     config.insert(QStringLiteral("usbDeviceName"), settings.usbDeviceName);
     config.insert(QStringLiteral("usbDeviceIndex"), settings.usbDeviceIndex);
     config.insert(QStringLiteral("usbModeCaps"), settings.usbModeCaps);
+    config.insert(QStringLiteral("recordingEnabled"), settings.recordingEnabled);
+    config.insert(QStringLiteral("recordingContainer"), recordingContainerName(settings.recordingContainer));
+    config.insert(QStringLiteral("recordingDirectory"), settings.recordingDirectory.trimmed());
+    config.insert(QStringLiteral("recordingBitrateKbps"), settings.recordingBitrateKbps);
 
     QJsonObject usbControls;
     for (auto it = settings.usbControls.cbegin(); it != settings.usbControls.cend(); ++it) {

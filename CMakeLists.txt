@@ -4,7 +4,7 @@ if(POLICY CMP0207)
     cmake_policy(SET CMP0207 NEW)
 endif()
 
-project(GCS_player VERSION 0.1.0 LANGUAGES CXX)
+project(GCS_player VERSION 0.1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -76,6 +76,8 @@ set(GCS_PLAYER_SOURCES
     "${GCS_CORE_SRC_DIR}/MainWindow.cpp"
     "${GCS_CORE_INC_DIR}/MainWindow.h"
     "${GCS_CORE_SRC_DIR}/MainWindow.ui"
+    "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoRecorder.cpp"
+    "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoRecorder.h"
     "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
     "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoReceiver.h"
     "${GCS_VIDEO_MODULE_SRC_DIR}/UsbCameraManager.cpp"
@@ -401,7 +403,7 @@ elseif(UNIX AND NOT APPLE)
         set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
     endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "qt6-qpa-plugins, qt6-wayland, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav"
+        "qt6-qpa-plugins, qt6-wayland, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav"
     )
 endif()
 

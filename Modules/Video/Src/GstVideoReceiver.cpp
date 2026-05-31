@@ -171,6 +171,44 @@ const char* parserFactory(GstVideoReceiver::Codec codec)
     return codec == GstVideoReceiver::Codec::H265 ? "h265parse" : "h264parse";
 }
 
+bool elementFactoryAvailable(const char* factoryName)
+{
+    GstElementFactory* factory = gst_element_factory_find(factoryName);
+    if (factory == nullptr) {
+        return false;
+    }
+
+    gst_object_unref(factory);
+    return true;
+}
+
+GstElement* makeElement(const char* factoryName, const char* elementName, QStringList& missingElements)
+{
+    GstElement* element = gst_element_factory_make(factoryName, elementName);
+    if (element == nullptr) {
+        missingElements.append(QString::fromLatin1(factoryName));
+    }
+    return element;
+}
+
+void syncElementWithPipeline(GstElement* element)
+{
+    if (element != nullptr) {
+        gst_element_sync_state_with_parent(element);
+    }
+}
+
+GstVideoRecorder::Settings recordingSettingsFromStreamSettings(
+    const GstVideoReceiver::StreamSettings& settings)
+{
+    GstVideoRecorder::Settings recordingSettings;
+    recordingSettings.enabled = settings.recordingEnabled;
+    recordingSettings.container = settings.recordingContainer;
+    recordingSettings.directory = settings.recordingDirectory;
+    recordingSettings.bitrateKbps = settings.recordingBitrateKbps;
+    return recordingSettings;
+}
+
 QVideoFrame imageToVideoFrame(const QImage& image)
 {
     const QImage source = image.convertToFormat(QImage::Format_ARGB32);
@@ -363,6 +401,7 @@ GstVideoReceiver::GstVideoReceiver(QObject* parent)
 GstVideoReceiver::GstVideoReceiver(const StreamSettings& settings, QObject* parent)
     : QThread(parent)
     , m_settings(settings)
+    , m_recorder(recordingSettingsFromStreamSettings(settings))
 {
     qRegisterMetaType<QVideoFrame>("QVideoFrame");
 }
@@ -539,6 +578,160 @@ bool GstVideoReceiver::createCustomPipeline()
     return true;
 }
 
+bool GstVideoReceiver::attachEncodedRecordingBranch(GstElement* tee, EncodedVideoKind kind)
+{
+    QString statusMessage;
+    QString errorMessage;
+    const bool attached = m_recorder.attachEncodedBranch(
+        m_pipeline,
+        tee,
+        kind,
+        statusMessage,
+        errorMessage
+    );
+    if (!errorMessage.isEmpty()) {
+        emit receiverError(errorMessage);
+    }
+    for (const QString& line : statusMessage.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        emit receiverMessage(line);
+    }
+    return attached;
+}
+
+bool GstVideoReceiver::attachRawRecordingBranch(GstElement* tee)
+{
+    QString statusMessage;
+    QString errorMessage;
+    const bool attached = m_recorder.attachRawBranch(m_pipeline, tee, statusMessage, errorMessage);
+    if (!errorMessage.isEmpty()) {
+        emit receiverError(errorMessage);
+    }
+    for (const QString& line : statusMessage.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        emit receiverMessage(line);
+    }
+    return attached;
+}
+
+bool GstVideoReceiver::linkDynamicEncodedPad(GstPad* sourcePad, GstCaps* caps)
+{
+    if (sourcePad == nullptr || m_decodeQueue == nullptr) {
+        return false;
+    }
+
+    const EncodedVideoKind kind = GstVideoRecorder::encodedVideoKindFromCaps(caps);
+    if (kind == EncodedVideoKind::Unknown) {
+        emit receiverError(QStringLiteral("Unable to identify encoded video for recording."));
+        return false;
+    }
+
+    if (m_recordTee == nullptr) {
+        m_recordTee = gst_element_factory_make("tee", "dynamic-record-tee");
+        if (m_recordTee == nullptr) {
+            emit receiverError(QStringLiteral("Missing GStreamer element: tee."));
+            return false;
+        }
+
+        gst_bin_add(GST_BIN(m_pipeline), m_recordTee);
+        if (!gst_element_link(m_recordTee, m_decodeQueue)) {
+            emit receiverError(QStringLiteral("Unable to link the dynamic preview branch."));
+            return false;
+        }
+        attachEncodedRecordingBranch(m_recordTee, kind);
+        syncElementWithPipeline(m_recordTee);
+    }
+
+    GstPad* sinkPad = gst_element_get_static_pad(m_recordTee, "sink");
+    if (sinkPad == nullptr) {
+        return false;
+    }
+    if (gst_pad_is_linked(sinkPad)) {
+        gst_object_unref(sinkPad);
+        return true;
+    }
+
+    const bool linked = gst_pad_link(sourcePad, sinkPad) == GST_PAD_LINK_OK;
+    gst_object_unref(sinkPad);
+    if (!linked) {
+        emit receiverError(QStringLiteral("Unable to link the encoded stream to the recording tee."));
+    }
+    return linked;
+}
+
+bool GstVideoReceiver::createDynamicRtspReceiveChain(GstPad* sourcePad, GstCaps* caps)
+{
+    if (m_recordTee != nullptr) {
+        return false;
+    }
+
+    const EncodedVideoKind kind = GstVideoRecorder::encodedVideoKindFromRtpCaps(caps);
+    const char* depayFactoryName = nullptr;
+    const char* parserFactoryName = nullptr;
+    switch (kind) {
+    case EncodedVideoKind::H264:
+        depayFactoryName = "rtph264depay";
+        parserFactoryName = "h264parse";
+        break;
+    case EncodedVideoKind::H265:
+        depayFactoryName = "rtph265depay";
+        parserFactoryName = "h265parse";
+        break;
+    case EncodedVideoKind::Mjpeg:
+        depayFactoryName = "rtpjpegdepay";
+        parserFactoryName = elementFactoryAvailable("jpegparse") ? "jpegparse" : nullptr;
+        break;
+    case EncodedVideoKind::Unknown:
+        return false;
+    }
+
+    QStringList missingElements;
+    GstElement* depayloader = makeElement(depayFactoryName, "rtsp-record-depay", missingElements);
+    GstElement* parser = parserFactoryName != nullptr
+        ? makeElement(parserFactoryName, "rtsp-record-parser", missingElements)
+        : nullptr;
+    m_recordTee = gst_element_factory_make("tee", "rtsp-record-tee");
+    if (m_recordTee == nullptr) {
+        missingElements.append(QStringLiteral("tee"));
+    }
+
+    if (!missingElements.isEmpty()) {
+        emit receiverError(QStringLiteral("Missing GStreamer RTSP recording element(s): %1.")
+            .arg(missingElements.join(QStringLiteral(", "))));
+        return false;
+    }
+
+    gst_bin_add(GST_BIN(m_pipeline), depayloader);
+    if (parser != nullptr) {
+        gst_bin_add(GST_BIN(m_pipeline), parser);
+    }
+    gst_bin_add(GST_BIN(m_pipeline), m_recordTee);
+
+    const bool linkedToTee = parser != nullptr
+        ? gst_element_link_many(depayloader, parser, m_recordTee, nullptr)
+        : gst_element_link(depayloader, m_recordTee);
+    if (!linkedToTee || !gst_element_link(m_recordTee, m_decodeQueue)) {
+        emit receiverError(QStringLiteral("Unable to link the RTSP recording receive chain."));
+        return false;
+    }
+
+    attachEncodedRecordingBranch(m_recordTee, kind);
+
+    GstPad* depaySinkPad = gst_element_get_static_pad(depayloader, "sink");
+    if (depaySinkPad == nullptr) {
+        return false;
+    }
+    const bool sourceLinked = gst_pad_link(sourcePad, depaySinkPad) == GST_PAD_LINK_OK;
+    gst_object_unref(depaySinkPad);
+    if (!sourceLinked) {
+        emit receiverError(QStringLiteral("Unable to link the RTSP RTP pad to the depayloader."));
+        return false;
+    }
+
+    syncElementWithPipeline(depayloader);
+    syncElementWithPipeline(parser);
+    syncElementWithPipeline(m_recordTee);
+    return true;
+}
+
 bool GstVideoReceiver::createPipeline()
 {
     destroyPipeline();
@@ -547,8 +740,12 @@ bool GstVideoReceiver::createPipeline()
     m_lastFrameTimestampMs.store(QDateTime::currentMSecsSinceEpoch(), std::memory_order_relaxed);
     m_lastFrameWidth.store(0, std::memory_order_relaxed);
     m_lastFrameHeight.store(0, std::memory_order_relaxed);
+    m_restartRequested.store(false, std::memory_order_relaxed);
 
     if (m_settings.transport == Transport::CustomPipeline) {
+        if (m_recorder.enabled()) {
+            emit receiverMessage(QStringLiteral("Recording is not available for custom GStreamer pipelines."));
+        }
         return createCustomPipeline();
     }
 
@@ -582,6 +779,12 @@ bool GstVideoReceiver::createPipeline()
         m_parser = gst_element_factory_make(parserFactory(m_settings.codec), "video-parser");
     } else if (useMpegTs || useTcpMpegTs) {
         m_tsDemux = gst_element_factory_make("tsdemux", "mpeg-ts-demux");
+        if (m_recorder.enabled()) {
+            m_parseBin = gst_element_factory_make("parsebin", "mpeg-ts-parse-bin");
+        }
+    }
+    if (m_recorder.enabled() && (useRtp || useUsb)) {
+        m_recordTee = gst_element_factory_make("tee", "record-tee");
     }
     m_decodeQueue = gst_element_factory_make("queue", "decode-queue");
     if (!useUsb || useUsbDecoder) {
@@ -620,6 +823,12 @@ bool GstVideoReceiver::createPipeline()
         trackMissingElement(m_parser, QString::fromUtf8(parserFactory(m_settings.codec)));
     } else if (useMpegTs || useTcpMpegTs) {
         trackMissingElement(m_tsDemux, QStringLiteral("tsdemux"));
+        if (m_recorder.enabled()) {
+            trackMissingElement(m_parseBin, QStringLiteral("parsebin"));
+        }
+    }
+    if (m_recorder.enabled() && (useRtp || useUsb)) {
+        trackMissingElement(m_recordTee, QStringLiteral("tee"));
     }
     trackMissingElement(m_decodeQueue, QStringLiteral("queue"));
     if (!useUsb || useUsbDecoder) {
@@ -746,6 +955,9 @@ bool GstVideoReceiver::createPipeline()
     if (m_tsDemux != nullptr) {
         g_signal_connect(m_tsDemux, "pad-added", G_CALLBACK(onTsDemuxPadAdded), this);
     }
+    if (m_parseBin != nullptr) {
+        g_signal_connect(m_parseBin, "pad-added", G_CALLBACK(onEncodedPadAdded), this);
+    }
     if (m_rtspSource != nullptr) {
         g_signal_connect(m_rtspSource, "pad-added", G_CALLBACK(onRtspPadAdded), this);
     }
@@ -770,6 +982,9 @@ bool GstVideoReceiver::createPipeline()
         if (m_jitterBuffer != nullptr) {
             gst_bin_add(GST_BIN(m_pipeline), m_jitterBuffer);
         }
+        if (m_recordTee != nullptr) {
+            gst_bin_add(GST_BIN(m_pipeline), m_recordTee);
+        }
 
         const gboolean receiveChainLinked = m_jitterBuffer != nullptr
             ? gst_element_link_many(
@@ -777,18 +992,24 @@ bool GstVideoReceiver::createPipeline()
                 m_jitterBuffer,
                 m_depayloader,
                 m_parser,
-                m_decodeQueue,
-                m_decoder,
+                m_recordTee != nullptr ? m_recordTee : m_decodeQueue,
                 nullptr)
             : gst_element_link_many(
                 m_udpSource,
                 m_depayloader,
                 m_parser,
-                m_decodeQueue,
-                m_decoder,
+                m_recordTee != nullptr ? m_recordTee : m_decodeQueue,
                 nullptr);
 
-        if (!receiveChainLinked) {
+        const gboolean previewChainLinked = m_recordTee != nullptr
+            ? gst_element_link_many(m_recordTee, m_decodeQueue, m_decoder, nullptr)
+            : gst_element_link(m_decodeQueue, m_decoder);
+        const EncodedVideoKind rtpRecordingKind = m_settings.codec == Codec::H265
+            ? EncodedVideoKind::H265
+            : EncodedVideoKind::H264;
+        attachEncodedRecordingBranch(m_recordTee, rtpRecordingKind);
+
+        if (!receiveChainLinked || !previewChainLinked) {
             emit receiverError(QStringLiteral("Unable to link the RTP receive chain."));
             destroyPipeline();
             return false;
@@ -805,6 +1026,9 @@ bool GstVideoReceiver::createPipeline()
             m_appSink,
             nullptr
         );
+        if (m_parseBin != nullptr) {
+            gst_bin_add(GST_BIN(m_pipeline), m_parseBin);
+        }
 
         GstElement* sourceElement = useTcpMpegTs ? m_tcpSource : m_udpSource;
         if (!gst_element_link(sourceElement, m_tsDemux)
@@ -844,8 +1068,31 @@ bool GstVideoReceiver::createPipeline()
                 m_appSink,
                 nullptr
             );
+            if (m_recordTee != nullptr) {
+                gst_bin_add(GST_BIN(m_pipeline), m_recordTee);
+            }
 
-            if (!gst_element_link_many(m_usbSource, m_usbCapsFilter, m_decodeQueue, m_decoder, nullptr)) {
+            const gboolean receiveChainLinked = gst_element_link_many(
+                m_usbSource,
+                m_usbCapsFilter,
+                m_recordTee != nullptr ? m_recordTee : m_decodeQueue,
+                nullptr
+            );
+            const gboolean previewChainLinked = m_recordTee != nullptr
+                ? gst_element_link_many(m_recordTee, m_decodeQueue, m_decoder, nullptr)
+                : gst_element_link(m_decodeQueue, m_decoder);
+
+            EncodedVideoKind usbRecordingKind = EncodedVideoKind::Unknown;
+            if (usbModeCaps.startsWith(QStringLiteral("image/jpeg"), Qt::CaseInsensitive)) {
+                usbRecordingKind = EncodedVideoKind::Mjpeg;
+            } else if (usbModeCaps.startsWith(QStringLiteral("video/x-h264"), Qt::CaseInsensitive)) {
+                usbRecordingKind = EncodedVideoKind::H264;
+            } else if (usbModeCaps.startsWith(QStringLiteral("video/x-h265"), Qt::CaseInsensitive)) {
+                usbRecordingKind = EncodedVideoKind::H265;
+            }
+            attachEncodedRecordingBranch(m_recordTee, usbRecordingKind);
+
+            if (!receiveChainLinked || !previewChainLinked) {
                 emit receiverError(QStringLiteral("Unable to link the USB camera compressed receive chain."));
                 destroyPipeline();
                 return false;
@@ -861,8 +1108,22 @@ bool GstVideoReceiver::createPipeline()
                 m_appSink,
                 nullptr
             );
+            if (m_recordTee != nullptr) {
+                gst_bin_add(GST_BIN(m_pipeline), m_recordTee);
+            }
 
-            if (!gst_element_link_many(m_usbSource, m_usbCapsFilter, m_decodeQueue, m_videoConvert, nullptr)) {
+            const gboolean receiveChainLinked = gst_element_link_many(
+                m_usbSource,
+                m_usbCapsFilter,
+                m_recordTee != nullptr ? m_recordTee : m_decodeQueue,
+                nullptr
+            );
+            const gboolean previewChainLinked = m_recordTee != nullptr
+                ? gst_element_link_many(m_recordTee, m_decodeQueue, m_videoConvert, nullptr)
+                : gst_element_link(m_decodeQueue, m_videoConvert);
+            attachRawRecordingBranch(m_recordTee);
+
+            if (!receiveChainLinked || !previewChainLinked) {
                 emit receiverError(QStringLiteral("Unable to link the USB camera raw receive chain."));
                 destroyPipeline();
                 return false;
@@ -892,8 +1153,23 @@ bool GstVideoReceiver::createPipeline()
     return true;
 }
 
+void GstVideoReceiver::finalizeRecording()
+{
+    QString statusMessage;
+    QString errorMessage;
+    m_recorder.finalize(m_pipeline, m_bus, statusMessage, errorMessage);
+    if (!errorMessage.isEmpty()) {
+        emit receiverError(errorMessage);
+    }
+    if (!statusMessage.isEmpty()) {
+        emit receiverMessage(statusMessage);
+    }
+}
+
 void GstVideoReceiver::destroyPipeline()
 {
+    finalizeRecording();
+
     if (m_pipeline != nullptr) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
     }
@@ -917,6 +1193,9 @@ void GstVideoReceiver::destroyPipeline()
     m_depayloader = nullptr;
     m_parser = nullptr;
     m_tsDemux = nullptr;
+    m_parseBin = nullptr;
+    m_recordTee = nullptr;
+    m_recorder.reset();
     m_decodeQueue = nullptr;
     m_decoder = nullptr;
     m_videoConvert = nullptr;
@@ -926,6 +1205,11 @@ void GstVideoReceiver::destroyPipeline()
 
 bool GstVideoReceiver::processBusMessages()
 {
+    if (m_restartRequested.exchange(false, std::memory_order_relaxed)) {
+        emit receiverMessage(QStringLiteral("Video format changed. Restarting the recording file."));
+        return false;
+    }
+
     if (m_bus == nullptr) {
         return false;
     }
@@ -1085,6 +1369,9 @@ GstFlowReturn GstVideoReceiver::processSample(GstAppSink* sink)
     const int previousHeight = m_lastFrameHeight.exchange(height, std::memory_order_relaxed);
     if (previousWidth != width || previousHeight != height) {
         emit videoSizeChanged(QSize(width, height));
+        if (m_recorder.enabled() && previousWidth > 0 && previousHeight > 0) {
+            m_restartRequested.store(true, std::memory_order_relaxed);
+        }
     }
 
     emit frameReady(frame);
@@ -1120,13 +1407,19 @@ void GstVideoReceiver::onRtspPadAdded(GstElement* src, GstPad* newPad, gpointer 
     const bool isVideoRtpPad = name != nullptr
         && g_str_has_prefix(name, "application/x-rtp")
         && (media == nullptr || g_strcmp0(media, "video") == 0);
-    gst_caps_unref(caps);
 
     if (!isVideoRtpPad) {
+        gst_caps_unref(caps);
+        return;
+    }
+
+    if (self->m_recorder.enabled() && self->createDynamicRtspReceiveChain(newPad, caps)) {
+        gst_caps_unref(caps);
         return;
     }
 
     GstPad* sinkPad = gst_element_get_static_pad(self->m_decodeQueue, "sink");
+    gst_caps_unref(caps);
     if (sinkPad == nullptr) {
         return;
     }
@@ -1169,6 +1462,20 @@ void GstVideoReceiver::onTsDemuxPadAdded(GstElement* src, GstPad* newPad, gpoint
         return;
     }
 
+    if (self->m_parseBin != nullptr) {
+        GstPad* sinkPad = gst_element_get_static_pad(self->m_parseBin, "sink");
+        if (sinkPad == nullptr) {
+            return;
+        }
+
+        if (!gst_pad_is_linked(sinkPad)
+            && gst_pad_link(newPad, sinkPad) != GST_PAD_LINK_OK) {
+            emit self->receiverError(QStringLiteral("Unable to link the MPEG-TS stream to parsebin."));
+        }
+        gst_object_unref(sinkPad);
+        return;
+    }
+
     GstPad* sinkPad = gst_element_get_static_pad(self->m_decodeQueue, "sink");
     if (sinkPad == nullptr) {
         return;
@@ -1184,6 +1491,36 @@ void GstVideoReceiver::onTsDemuxPadAdded(GstElement* src, GstPad* newPad, gpoint
     }
 
     gst_object_unref(sinkPad);
+}
+
+void GstVideoReceiver::onEncodedPadAdded(GstElement* src, GstPad* newPad, gpointer userData)
+{
+    Q_UNUSED(src)
+
+    auto* self = static_cast<GstVideoReceiver*>(userData);
+    if (self == nullptr) {
+        return;
+    }
+
+    GstCaps* caps = gst_pad_get_current_caps(newPad);
+    if (caps == nullptr) {
+        caps = gst_pad_query_caps(newPad, nullptr);
+    }
+    if (caps == nullptr) {
+        return;
+    }
+
+    const GstStructure* structure = gst_caps_get_structure(caps, 0);
+    const gchar* name = structure != nullptr ? gst_structure_get_name(structure) : nullptr;
+    const bool isEncodedVideo = name != nullptr
+        && (g_strcmp0(name, "video/x-h264") == 0
+            || g_strcmp0(name, "video/x-h265") == 0
+            || g_strcmp0(name, "image/jpeg") == 0);
+    if (isEncodedVideo) {
+        self->linkDynamicEncodedPad(newPad, caps);
+    }
+
+    gst_caps_unref(caps);
 }
 
 void GstVideoReceiver::onDecoderPadAdded(GstElement* src, GstPad* newPad, gpointer userData)
