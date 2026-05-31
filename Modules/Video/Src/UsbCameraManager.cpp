@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 #include <gst/gst.h>
 
@@ -621,6 +622,391 @@ void sortModes(QVector<UsbCameraMode>& modes)
     });
 }
 
+#ifdef Q_OS_LINUX
+QString canonicalDevicePath(const QString& path)
+{
+    const QFileInfo info(path);
+    const QString canonicalPath = info.canonicalFilePath();
+    return canonicalPath.isEmpty() ? info.absoluteFilePath() : canonicalPath;
+}
+
+QString v4l2FourccToString(quint32 fourcc)
+{
+    QByteArray bytes;
+    bytes.resize(4);
+    bytes[0] = static_cast<char>(fourcc & 0xff);
+    bytes[1] = static_cast<char>((fourcc >> 8) & 0xff);
+    bytes[2] = static_cast<char>((fourcc >> 16) & 0xff);
+    bytes[3] = static_cast<char>((fourcc >> 24) & 0xff);
+    return QString::fromLatin1(bytes).trimmed();
+}
+
+QString gstFormatFromV4l2PixelFormat(quint32 pixelFormat)
+{
+    switch (pixelFormat) {
+    case V4L2_PIX_FMT_MJPEG:
+    case V4L2_PIX_FMT_JPEG:
+        return QStringLiteral("MJPEG");
+    case V4L2_PIX_FMT_Y16:
+        return QStringLiteral("GRAY16_LE");
+    case V4L2_PIX_FMT_GREY:
+        return QStringLiteral("GRAY8");
+    case V4L2_PIX_FMT_YUYV:
+        return QStringLiteral("YUY2");
+    case V4L2_PIX_FMT_UYVY:
+        return QStringLiteral("UYVY");
+    case V4L2_PIX_FMT_RGB24:
+        return QStringLiteral("RGB");
+    case V4L2_PIX_FMT_BGR24:
+        return QStringLiteral("BGR");
+    case V4L2_PIX_FMT_YUV420:
+        return QStringLiteral("I420");
+    case V4L2_PIX_FMT_NV12:
+        return QStringLiteral("NV12");
+#ifdef V4L2_PIX_FMT_H264
+    case V4L2_PIX_FMT_H264:
+        return QStringLiteral("H264");
+#endif
+    default:
+        return v4l2FourccToString(pixelFormat);
+    }
+}
+
+QString capsStringForV4l2Mode(
+    quint32 pixelFormat,
+    const QString& format,
+    int width,
+    int height,
+    int fpsNumerator,
+    int fpsDenominator)
+{
+    QString caps;
+    switch (pixelFormat) {
+    case V4L2_PIX_FMT_MJPEG:
+    case V4L2_PIX_FMT_JPEG:
+        caps = QStringLiteral("image/jpeg");
+        break;
+#ifdef V4L2_PIX_FMT_H264
+    case V4L2_PIX_FMT_H264:
+        caps = QStringLiteral("video/x-h264");
+        break;
+#endif
+    default:
+        caps = QStringLiteral("video/x-raw");
+        if (!format.isEmpty()) {
+            caps += QStringLiteral(",format=%1").arg(format);
+        }
+        break;
+    }
+
+    if (width > 0) {
+        caps += QStringLiteral(",width=%1").arg(width);
+    }
+    if (height > 0) {
+        caps += QStringLiteral(",height=%1").arg(height);
+    }
+    if (fpsNumerator > 0 && fpsDenominator > 0) {
+        caps += QStringLiteral(",framerate=%1/%2").arg(fpsNumerator).arg(fpsDenominator);
+    }
+
+    return caps;
+}
+
+quint32 effectiveV4l2Capabilities(const v4l2_capability& capability)
+{
+    return capability.device_caps != 0 ? capability.device_caps : capability.capabilities;
+}
+
+bool queryV4l2Capability(const QString& path, v4l2_capability& capability)
+{
+    const int fd = open(path.toLocal8Bit().constData(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        return false;
+    }
+
+    const bool ok = ioctl(fd, VIDIOC_QUERYCAP, &capability) == 0;
+    close(fd);
+    return ok;
+}
+
+bool isV4l2CaptureDevice(const v4l2_capability& capability)
+{
+    const quint32 capabilities = effectiveV4l2Capabilities(capability);
+    return (capabilities & V4L2_CAP_VIDEO_CAPTURE) != 0
+        || (capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) != 0;
+}
+
+QVector<v4l2_buf_type> captureBufferTypesForCapabilities(const v4l2_capability& capability)
+{
+    QVector<v4l2_buf_type> result;
+    const quint32 capabilities = effectiveV4l2Capabilities(capability);
+    if ((capabilities & V4L2_CAP_VIDEO_CAPTURE) != 0) {
+        result.append(V4L2_BUF_TYPE_VIDEO_CAPTURE);
+    }
+    if ((capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) != 0) {
+        result.append(V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+    }
+    return result;
+}
+
+QStringList v4l2CandidatePaths()
+{
+    QStringList paths;
+    const auto addEntries = [&paths](const QString& directoryPath, const QStringList& nameFilters) {
+        const QDir directory(directoryPath);
+        if (!directory.exists()) {
+            return;
+        }
+
+        const QFileInfoList entries = directory.entryInfoList(
+            nameFilters,
+            QDir::AllEntries | QDir::System | QDir::NoDotAndDotDot,
+            QDir::Name
+        );
+        for (const QFileInfo& entry : entries) {
+            paths.append(entry.absoluteFilePath());
+        }
+    };
+
+    addEntries(QStringLiteral("/dev/v4l/by-id"), {QStringLiteral("*")});
+    addEntries(QStringLiteral("/dev/v4l/by-path"), {QStringLiteral("*")});
+    addEntries(QStringLiteral("/dev"), {QStringLiteral("video*")});
+    return paths;
+}
+
+QString v4l2DisplayName(const QString& path, const v4l2_capability& capability)
+{
+    const QString cardName = QString::fromLocal8Bit(
+        reinterpret_cast<const char*>(capability.card)
+    ).trimmed();
+    if (!cardName.isEmpty()) {
+        return cardName;
+    }
+
+    const QFileInfo info(path);
+    return info.fileName().isEmpty() ? path : info.fileName();
+}
+
+void appendV4l2NodeDevices(QVector<UsbCameraDevice>& result)
+{
+    QSet<QString> seen;
+    for (const UsbCameraDevice& device : std::as_const(result)) {
+        if (!device.id.isEmpty()) {
+            seen.insert(canonicalDevicePath(device.id));
+        }
+    }
+
+    for (const QString& candidatePath : v4l2CandidatePaths()) {
+        v4l2_capability capability = {};
+        if (!queryV4l2Capability(candidatePath, capability) || !isV4l2CaptureDevice(capability)) {
+            continue;
+        }
+
+        const QString devicePath = canonicalDevicePath(candidatePath);
+        if (seen.contains(devicePath)) {
+            continue;
+        }
+
+        UsbCameraDevice device;
+        device.id = devicePath;
+        device.displayName = v4l2DisplayName(candidatePath, capability);
+        device.backend = QStringLiteral("V4L2");
+        device.index = result.size();
+        result.append(device);
+        seen.insert(devicePath);
+    }
+}
+
+UsbCameraMode v4l2Mode(
+    quint32 pixelFormat,
+    int width,
+    int height,
+    int fpsNumerator,
+    int fpsDenominator)
+{
+    UsbCameraMode mode;
+    mode.width = width;
+    mode.height = height;
+    mode.fpsNumerator = fpsNumerator;
+    mode.fpsDenominator = fpsDenominator <= 0 ? 1 : fpsDenominator;
+    reduceFraction(mode.fpsNumerator, mode.fpsDenominator);
+    mode.format = gstFormatFromV4l2PixelFormat(pixelFormat);
+    if (mode.format.isEmpty()) {
+        mode.format = QStringLiteral("Video");
+    }
+    mode.caps = capsStringForV4l2Mode(
+        pixelFormat,
+        mode.format,
+        mode.width,
+        mode.height,
+        mode.fpsNumerator,
+        mode.fpsDenominator
+    );
+    mode.id = mode.caps;
+
+    const QString fpsLabel = mode.fpsNumerator > 0 && mode.fpsDenominator > 0
+        ? QStringLiteral(" @ %1 fps").arg(
+            static_cast<double>(mode.fpsNumerator) / static_cast<double>(mode.fpsDenominator),
+            0,
+            'f',
+            mode.fpsDenominator == 1 ? 0 : 2)
+        : QString();
+    mode.label = QStringLiteral("%1 x %2 %3%4")
+        .arg(mode.width)
+        .arg(mode.height)
+        .arg(mode.format)
+        .arg(fpsLabel);
+    return mode;
+}
+
+void appendV4l2Mode(
+    QVector<UsbCameraMode>& result,
+    QSet<QString>& seenCaps,
+    quint32 pixelFormat,
+    int width,
+    int height,
+    int fpsNumerator,
+    int fpsDenominator)
+{
+    UsbCameraMode mode = v4l2Mode(pixelFormat, width, height, fpsNumerator, fpsDenominator);
+    if (mode.width <= 0 || mode.height <= 0 || mode.caps.isEmpty() || seenCaps.contains(mode.caps)) {
+        return;
+    }
+
+    seenCaps.insert(mode.caps);
+    result.append(mode);
+}
+
+void appendV4l2FrameIntervals(
+    int fd,
+    QVector<UsbCameraMode>& result,
+    QSet<QString>& seenCaps,
+    v4l2_buf_type bufferType,
+    quint32 pixelFormat,
+    int width,
+    int height)
+{
+    bool hasIntervals = false;
+    for (quint32 intervalIndex = 0;; ++intervalIndex) {
+        v4l2_frmivalenum interval = {};
+        interval.index = intervalIndex;
+        interval.pixel_format = pixelFormat;
+        interval.width = width;
+        interval.height = height;
+        interval.type = bufferType;
+        if (ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &interval) != 0) {
+            break;
+        }
+
+        hasIntervals = true;
+        if (interval.type == V4L2_FRMIVAL_TYPE_DISCRETE) {
+            appendV4l2Mode(
+                result,
+                seenCaps,
+                pixelFormat,
+                width,
+                height,
+                interval.discrete.denominator,
+                interval.discrete.numerator
+            );
+        } else {
+            appendV4l2Mode(
+                result,
+                seenCaps,
+                pixelFormat,
+                width,
+                height,
+                interval.stepwise.min.denominator,
+                interval.stepwise.min.numerator
+            );
+            break;
+        }
+    }
+
+    if (!hasIntervals) {
+        appendV4l2Mode(result, seenCaps, pixelFormat, width, height, 0, 1);
+    }
+}
+
+void appendV4l2FrameSizes(
+    int fd,
+    QVector<UsbCameraMode>& result,
+    QSet<QString>& seenCaps,
+    v4l2_buf_type bufferType,
+    quint32 pixelFormat)
+{
+    bool hasSizes = false;
+    for (quint32 sizeIndex = 0;; ++sizeIndex) {
+        v4l2_frmsizeenum size = {};
+        size.index = sizeIndex;
+        size.pixel_format = pixelFormat;
+        if (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &size) != 0) {
+            break;
+        }
+
+        hasSizes = true;
+        if (size.type == V4L2_FRMSIZE_TYPE_DISCRETE) {
+            appendV4l2FrameIntervals(
+                fd,
+                result,
+                seenCaps,
+                bufferType,
+                pixelFormat,
+                static_cast<int>(size.discrete.width),
+                static_cast<int>(size.discrete.height)
+            );
+        } else {
+            appendV4l2FrameIntervals(
+                fd,
+                result,
+                seenCaps,
+                bufferType,
+                pixelFormat,
+                static_cast<int>(size.stepwise.max_width),
+                static_cast<int>(size.stepwise.max_height)
+            );
+            break;
+        }
+    }
+
+    if (!hasSizes) {
+        appendV4l2Mode(result, seenCaps, pixelFormat, 0, 0, 0, 1);
+    }
+}
+
+QVector<UsbCameraMode> modesFromV4l2Device(const QString& devicePath)
+{
+    QVector<UsbCameraMode> result;
+    v4l2_capability capability = {};
+    if (!queryV4l2Capability(devicePath, capability) || !isV4l2CaptureDevice(capability)) {
+        return result;
+    }
+
+    const int fd = open(devicePath.toLocal8Bit().constData(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        return result;
+    }
+
+    QSet<QString> seenCaps;
+    for (v4l2_buf_type bufferType : captureBufferTypesForCapabilities(capability)) {
+        for (quint32 formatIndex = 0;; ++formatIndex) {
+            v4l2_fmtdesc format = {};
+            format.index = formatIndex;
+            format.type = bufferType;
+            if (ioctl(fd, VIDIOC_ENUM_FMT, &format) != 0) {
+                break;
+            }
+
+            appendV4l2FrameSizes(fd, result, seenCaps, bufferType, format.pixelformat);
+        }
+    }
+
+    close(fd);
+    sortModes(result);
+    return result;
+}
+#endif
+
 QVector<UsbCameraDevice> devicesFromGStreamer()
 {
     QVector<UsbCameraDevice> result;
@@ -1213,7 +1599,14 @@ QVector<UsbCameraDevice> UsbCameraManager::devices()
 
     releaseCom(enumMoniker);
 #else
+#ifdef Q_OS_LINUX
+    appendV4l2NodeDevices(result);
+    if (result.isEmpty()) {
+        result = devicesFromGStreamer();
+    }
+#else
     result = devicesFromGStreamer();
+#endif
 #endif
     return result;
 }
@@ -1231,7 +1624,13 @@ QVector<UsbCameraMode> UsbCameraManager::modes(const QString& deviceId, int devi
     }
     return result;
 #else
-    return modesFromGStreamerDeviceCaps(deviceId, {}, deviceIndex);
+    result = modesFromGStreamerDeviceCaps(deviceId, {}, deviceIndex);
+#ifdef Q_OS_LINUX
+    if (result.isEmpty() && !deviceId.isEmpty()) {
+        result = modesFromV4l2Device(deviceId);
+    }
+#endif
+    return result;
 #endif
 }
 
