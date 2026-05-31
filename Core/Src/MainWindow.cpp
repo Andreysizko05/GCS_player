@@ -186,7 +186,20 @@ void MainWindow::setupVideoSettingsUi()
     setupUsbSettingsUi();
     setupRecordingSettingsUi();
 
+    mResetVideoSettingsButton = new QPushButton(QStringLiteral("Reset Settings"), ui->videoSettingsDockContents);
+    const int applyButtonIndex = ui->videoSettingsOuterLayout->indexOf(ui->applyVideoSettingsButton);
+    ui->videoSettingsOuterLayout->insertWidget(
+        applyButtonIndex >= 0 ? applyButtonIndex : 1,
+        mResetVideoSettingsButton
+    );
+
     connect(ui->applyVideoSettingsButton, &QPushButton::clicked, this, &MainWindow::applyVideoSettings);
+    connect(
+        mResetVideoSettingsButton,
+        &QPushButton::clicked,
+        this,
+        &MainWindow::onResetVideoSettingsClicked
+    );
     connect(
         ui->videoContainerComboBox,
         QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -288,29 +301,7 @@ void MainWindow::loadVideoSettings()
 {
     const VideoSettingsConfig config;
     const VideoSettingsConfig::LoadResult result = config.loadOrCreate();
-    applyVideoSettingsToUi(ui, result.settings);
-    if (mCustomPipelineTextEdit != nullptr) {
-        mCustomPipelineTextEdit->setPlainText(result.settings.customPipeline);
-    }
-    if (mRecordingEnabledCheckBox != nullptr) {
-        mRecordingEnabledCheckBox->setChecked(result.settings.recordingEnabled);
-    }
-    if (mRecordingContainerComboBox != nullptr) {
-        mRecordingContainerComboBox->setCurrentIndex(
-            recordingContainerIndexFromContainer(result.settings.recordingContainer)
-        );
-    }
-    if (mRecordingDirectoryLineEdit != nullptr) {
-        mRecordingDirectoryLineEdit->setText(
-            result.settings.recordingDirectory.isEmpty()
-                ? defaultRecordingDirectory()
-                : result.settings.recordingDirectory
-        );
-    }
-    refreshUsbDevices(result.settings.usbDeviceId);
-    refreshUsbModes(result.settings.usbModeCaps);
-    refreshUsbControls(result.settings.usbControls);
-    onVideoContainerChanged(ui->videoContainerComboBox->currentIndex());
+    applyVideoSettingsToWidgets(result.settings);
 
     if (!result.ok) {
         ui->statusbar->showMessage(
@@ -318,6 +309,33 @@ void MainWindow::loadVideoSettings()
             5000
         );
     }
+}
+
+void MainWindow::applyVideoSettingsToWidgets(const VideoSettingsConfig::Settings& settings)
+{
+    applyVideoSettingsToUi(ui, settings);
+    if (mCustomPipelineTextEdit != nullptr) {
+        mCustomPipelineTextEdit->setPlainText(settings.customPipeline);
+    }
+    if (mRecordingEnabledCheckBox != nullptr) {
+        mRecordingEnabledCheckBox->setChecked(settings.recordingEnabled);
+    }
+    if (mRecordingContainerComboBox != nullptr) {
+        mRecordingContainerComboBox->setCurrentIndex(
+            recordingContainerIndexFromContainer(settings.recordingContainer)
+        );
+    }
+    if (mRecordingDirectoryLineEdit != nullptr) {
+        mRecordingDirectoryLineEdit->setText(
+            settings.recordingDirectory.isEmpty()
+                ? defaultRecordingDirectory()
+                : settings.recordingDirectory
+        );
+    }
+    refreshUsbDevices(settings.usbDeviceId);
+    refreshUsbModes(settings.usbModeCaps);
+    refreshUsbControls(settings.usbControls);
+    onVideoContainerChanged(ui->videoContainerComboBox->currentIndex());
 }
 
 bool MainWindow::saveVideoSettings() const
@@ -731,6 +749,27 @@ void MainWindow::onUsbCameraChanged(int index)
 void MainWindow::onRefreshUsbDevicesClicked()
 {
     refreshUsbDevices(selectedUsbDeviceId());
+}
+
+void MainWindow::onResetVideoSettingsClicked()
+{
+    const VideoSettingsConfig::Settings defaults;
+    const VideoSettingsConfig config;
+    QString errorMessage;
+    if (!config.reset(&errorMessage)) {
+        ui->statusbar->showMessage(
+            QStringLiteral("Unable to reset local video settings: %1").arg(errorMessage),
+            5000
+        );
+        return;
+    }
+
+    applyVideoSettingsToWidgets(defaults);
+    restartVideoReceiver();
+    ui->statusbar->showMessage(
+        QStringLiteral("Video settings reset: %1").arg(QDir::toNativeSeparators(config.configPath())),
+        5000
+    );
 }
 
 void MainWindow::onBrowseRecordingDirectoryClicked()

@@ -39,6 +39,7 @@ public:
 private:
     void setupVideoSettingsUi();
     void loadVideoSettings();
+    void applyVideoSettingsToWidgets(const VideoSettingsConfig::Settings& settings);
     VideoSettingsConfig::Settings currentVideoSettings() const;
     bool saveVideoSettings() const;
     void ensureVideoWidget();
@@ -64,6 +65,7 @@ private slots:
     void onVideoContainerChanged(int index);
     void onUsbCameraChanged(int index);
     void onRefreshUsbDevicesClicked();
+    void onResetVideoSettingsClicked();
     void onBrowseRecordingDirectoryClicked();
     void onVideoFrameReady(const QVideoFrame& frame);
     void onVideoSizeChanged(const QSize& size);
@@ -88,6 +90,7 @@ private:
     QPushButton* mBrowseRecordingDirectoryButton = nullptr;
     QPlainTextEdit* mCustomPipelineTextEdit = nullptr;
     QPushButton* mRefreshUsbDevicesButton = nullptr;
+    QPushButton* mResetVideoSettingsButton = nullptr;
     QGroupBox* mUsbControlsGroupBox = nullptr;
     QFormLayout* mUsbControlsLayout = nullptr;
     QHash<QString, UsbControlWidgets> mUsbControlWidgets;

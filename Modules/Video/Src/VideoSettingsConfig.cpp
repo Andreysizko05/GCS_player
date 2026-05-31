@@ -262,6 +262,11 @@ bool VideoSettingsConfig::save(const Settings& settings, QString* errorMessage) 
     return true;
 }
 
+bool VideoSettingsConfig::reset(QString* errorMessage) const
+{
+    return save(Settings(), errorMessage);
+}
+
 QString VideoSettingsConfig::defaultConfigPath()
 {
     QString configDirPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
