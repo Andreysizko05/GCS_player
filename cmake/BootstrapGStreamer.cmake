@@ -1174,8 +1174,8 @@ function(gcs_gst_linux_package_hint output_var)
 
     string(CONCAT _hint
         "\nInstall GStreamer development/runtime packages and re-run CMake:\n"
-        "  Arch/EndeavourOS: sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav\n"
-        "  Debian/Ubuntu:    sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav"
+        "  Arch/EndeavourOS: sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav\n"
+        "  Debian/Ubuntu:    sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav"
     )
     set(${output_var} "${_hint}" PARENT_SCOPE)
 endfunction()
