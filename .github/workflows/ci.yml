@@ -21,7 +21,6 @@ permissions:
 jobs:
   ubuntu-x64:
     name: Ubuntu 24.04 x64
-    if: ${{ false }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -161,8 +160,6 @@ jobs:
 
   windows-x64:
     name: Windows x64
-    # Temporarily disabled because the Windows package build is slow.
-    if: ${{ false }}
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
@@ -199,6 +196,7 @@ jobs:
     needs:
       - ubuntu-x64
       - raspberry-bookworm-arm64
+      - windows-x64
     runs-on: ubuntu-24.04
     permissions:
       actions: read
