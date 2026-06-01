@@ -87,67 +87,56 @@ jobs:
   raspberry-bookworm-arm64:
     name: Debian Bookworm arm64
     runs-on: ubuntu-24.04-arm
-    container:
-      image: debian:bookworm
     steps:
-      - name: Prepare container
-        shell: bash
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            bash \
-            ca-certificates \
-            git
-
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Build in Debian Bookworm container
         shell: bash
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential \
-            cmake \
-            dpkg-dev \
-            file \
-            ninja-build \
-            pkg-config \
-            python3 \
-            python3-venv \
-            qt6-base-dev \
-            qt6-multimedia-dev \
-            qt6-qpa-plugins \
-            qt6-tools-dev \
-            qt6-tools-dev-tools \
-            qt6-wayland \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav
+          docker run --rm \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            debian:bookworm \
+            bash -euxo pipefail -c '
+              apt-get update
+              apt-get install -y --no-install-recommends -o Dpkg::Use-Pty=0 \
+                build-essential \
+                cmake \
+                dpkg-dev \
+                file \
+                ninja-build \
+                pkg-config \
+                python3 \
+                python3-venv \
+                qt6-base-dev \
+                qt6-multimedia-dev \
+                qt6-qpa-plugins \
+                qt6-tools-dev \
+                qt6-tools-dev-tools \
+                qt6-wayland \
+                libgstreamer1.0-dev \
+                libgstreamer-plugins-base1.0-dev \
+                gstreamer1.0-tools \
+                gstreamer1.0-plugins-base \
+                gstreamer1.0-plugins-good \
+                gstreamer1.0-plugins-bad \
+                gstreamer1.0-plugins-ugly \
+                gstreamer1.0-libav
 
-      - name: Configure
-        run: >
-          cmake --preset linux-release
-          -DGCS_USE_SYSTEM_QT=ON
-          -DGCS_FETCH_QT_WITH_AQT=OFF
-          -DGCS_USE_SYSTEM_GSTREAMER=ON
-          -DGCS_FETCH_GSTREAMER=OFF
-
-      - name: Build
-        run: cmake --build --preset linux-release --parallel
-
-      - name: Test
-        run: ctest --test-dir build/linux-release --output-on-failure
-
-      - name: Package
-        run: cpack --config build/linux-release/CPackConfig.cmake -G DEB
-
-      - name: Package portable bundle
-        run: cmake --build --preset linux-release --target linux-portable-bundle
+              cmake --preset linux-release \
+                -DGCS_USE_SYSTEM_QT=ON \
+                -DGCS_FETCH_QT_WITH_AQT=OFF \
+                -DGCS_USE_SYSTEM_GSTREAMER=ON \
+                -DGCS_FETCH_GSTREAMER=OFF
+              cmake --build --preset linux-release --parallel
+              ctest --test-dir build/linux-release --output-on-failure
+              cpack --config build/linux-release/CPackConfig.cmake -G DEB
+              cmake --build --preset linux-release --target linux-portable-bundle
+              chown -R "${HOST_UID}:${HOST_GID}" build install 2>/dev/null || true
+            '
 
       - name: Upload package
         uses: actions/upload-artifact@v4
