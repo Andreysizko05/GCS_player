@@ -1504,8 +1504,20 @@ QMap<quint32, v4l2_queryctrl> queryV4l2Controls(int fd)
     return result;
 }
 
+bool hasInvalidV4l2ControlFlags(const v4l2_queryctrl& query)
+{
+    constexpr quint32 invalidFlags = V4L2_CTRL_FLAG_DISABLED
+        | V4L2_CTRL_FLAG_READ_ONLY
+        | V4L2_CTRL_FLAG_VOLATILE;
+    return (query.flags & invalidFlags) != 0;
+}
+
 bool isSupportedV4l2ValueControl(const v4l2_queryctrl& query)
 {
+    if (hasInvalidV4l2ControlFlags(query)) {
+        return false;
+    }
+
     if (isAutoCompanionControl(query.id)) {
         return false;
     }
@@ -1536,7 +1548,13 @@ QVector<UsbCameraControl> controlsFromV4l2Device(const QString& devicePath)
 
         UsbCameraControl control;
         const quint32 autoId = companionAutoControlId(query.id);
-        const bool hasAuto = autoId != 0 && queries.contains(autoId);
+        const bool hasAuto = autoId != 0
+            && queries.contains(autoId)
+            && !hasInvalidV4l2ControlFlags(queries.value(autoId));
+        v4l2_queryctrl autoQuery = {};
+        if (hasAuto) {
+            autoQuery = queries.value(autoId);
+        }
         control.id = controlIdFromV4l2(query.id, hasAuto ? autoId : 0);
         control.displayName = QString::fromUtf8(reinterpret_cast<const char*>(query.name));
         control.minimum = query.minimum;
@@ -1544,6 +1562,7 @@ QVector<UsbCameraControl> controlsFromV4l2Device(const QString& devicePath)
         control.step = std::max(1, query.step);
         control.defaultValue = query.default_value;
         control.supportsAuto = hasAuto;
+        control.defaultAutomatic = hasAuto && isV4l2AutoEnabled(autoId, autoQuery.default_value);
 
         int value = query.default_value;
         getV4l2ControlValue(device.get(), query.id, value);

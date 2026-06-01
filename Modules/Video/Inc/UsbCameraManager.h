@@ -40,6 +40,7 @@ struct UsbCameraControl
     int step = 1;
     int defaultValue = 0;
     bool supportsAuto = false;
+    bool defaultAutomatic = false;
     UsbCameraControlState state;
 };
 

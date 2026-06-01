@@ -14,6 +14,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -21,6 +22,8 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QStringList>
+#include <QVBoxLayout>
 #include <QWidget>
 #include <QtMultimedia/QVideoSink>
 #include <QtMultimediaWidgets/QVideoWidget>
@@ -142,6 +145,14 @@ void applyVideoSettingsToUi(Ui::MainWindow* ui, const VideoSettingsConfig::Setti
     ui->videoPortSpinBox->setValue(settings.port);
     ui->lowLatencyCheckBox->setChecked(settings.lowLatency);
 }
+
+UsbCameraControlState defaultStateForControl(const UsbCameraControl& control)
+{
+    UsbCameraControlState state;
+    state.value = std::clamp(control.defaultValue, control.minimum, control.maximum);
+    state.automatic = control.supportsAuto && control.defaultAutomatic;
+    return state;
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
@@ -186,20 +197,7 @@ void MainWindow::setupVideoSettingsUi()
     setupUsbSettingsUi();
     setupRecordingSettingsUi();
 
-    mResetVideoSettingsButton = new QPushButton(QStringLiteral("Reset Settings"), ui->videoSettingsDockContents);
-    const int applyButtonIndex = ui->videoSettingsOuterLayout->indexOf(ui->applyVideoSettingsButton);
-    ui->videoSettingsOuterLayout->insertWidget(
-        applyButtonIndex >= 0 ? applyButtonIndex : 1,
-        mResetVideoSettingsButton
-    );
-
     connect(ui->applyVideoSettingsButton, &QPushButton::clicked, this, &MainWindow::applyVideoSettings);
-    connect(
-        mResetVideoSettingsButton,
-        &QPushButton::clicked,
-        this,
-        &MainWindow::onResetVideoSettingsClicked
-    );
     connect(
         ui->videoContainerComboBox,
         QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -242,8 +240,14 @@ void MainWindow::setupUsbSettingsUi()
     ui->videoSettingsFormLayout->addRow(QStringLiteral("Mode"), mUsbModeComboBox);
 
     mUsbControlsGroupBox = new QGroupBox(QStringLiteral("UVC Controls"), ui->videoSettingsDockContents);
-    mUsbControlsLayout = new QFormLayout(mUsbControlsGroupBox);
+    auto* controlsOuterLayout = new QVBoxLayout(mUsbControlsGroupBox);
+    mUsbControlsLayout = new QFormLayout();
     mUsbControlsLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    controlsOuterLayout->addLayout(mUsbControlsLayout);
+
+    mUsbDefaultsButton = new QPushButton(QStringLiteral("Defaults"), mUsbControlsGroupBox);
+    mUsbDefaultsButton->setVisible(false);
+    controlsOuterLayout->addWidget(mUsbDefaultsButton, 0, Qt::AlignRight);
 
     const int applyButtonIndex = ui->videoSettingsOuterLayout->indexOf(ui->applyVideoSettingsButton);
     ui->videoSettingsOuterLayout->insertWidget(
@@ -262,6 +266,12 @@ void MainWindow::setupUsbSettingsUi()
         &QPushButton::clicked,
         this,
         &MainWindow::onRefreshUsbDevicesClicked
+    );
+    connect(
+        mUsbDefaultsButton,
+        &QPushButton::clicked,
+        this,
+        &MainWindow::onUsbDefaultsClicked
     );
 
     refreshUsbDevices();
@@ -520,6 +530,7 @@ void MainWindow::refreshUsbControls(const QMap<QString, UsbCameraControlState>& 
     }
 
     mUpdatingUsbUi = false;
+    updateUsbDefaultsButtonVisibility();
 }
 
 void MainWindow::clearUsbControls()
@@ -536,6 +547,17 @@ void MainWindow::clearUsbControls()
         }
         delete item;
     }
+}
+
+void MainWindow::updateUsbDefaultsButtonVisibility()
+{
+    if (mUsbDefaultsButton == nullptr) {
+        return;
+    }
+
+    const bool usbSelected = transportFromContainerIndex(ui->videoContainerComboBox->currentIndex())
+        == GstVideoReceiver::Transport::UsbCamera;
+    mUsbDefaultsButton->setVisible(usbSelected && !mUsbControlWidgets.isEmpty());
 }
 
 QString MainWindow::selectedUsbDeviceId() const
@@ -732,6 +754,7 @@ void MainWindow::onVideoContainerChanged(int index)
     if (mUsbControlsGroupBox != nullptr) {
         mUsbControlsGroupBox->setVisible(usbSelected);
     }
+    updateUsbDefaultsButtonVisibility();
 }
 
 void MainWindow::onUsbCameraChanged(int index)
@@ -751,25 +774,50 @@ void MainWindow::onRefreshUsbDevicesClicked()
     refreshUsbDevices(selectedUsbDeviceId());
 }
 
-void MainWindow::onResetVideoSettingsClicked()
+void MainWindow::onUsbDefaultsClicked()
 {
-    const VideoSettingsConfig::Settings defaults;
-    const VideoSettingsConfig config;
-    QString errorMessage;
-    if (!config.reset(&errorMessage)) {
+    if (mUsbControlWidgets.isEmpty()) {
+        return;
+    }
+
+    const QMessageBox::StandardButton button = QMessageBox::question(
+        this,
+        QStringLiteral("Restore Defaults"),
+        QStringLiteral("Reset UVC controls for the selected camera to their defaults?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No
+    );
+    if (button != QMessageBox::Yes) {
+        return;
+    }
+
+    const QString deviceId = selectedUsbDeviceId();
+    QStringList errors;
+    for (auto it = mUsbControlWidgets.cbegin(); it != mUsbControlWidgets.cend(); ++it) {
+        QString errorMessage;
+        if (!UsbCameraManager::setControl(
+                deviceId,
+                it.key(),
+                defaultStateForControl(it.value().control),
+                &errorMessage)) {
+            errors.append(errorMessage);
+        }
+    }
+
+    refreshUsbControls();
+    if (!saveVideoSettings()) {
+        errors.append(QStringLiteral("Unable to save local video settings."));
+    }
+
+    if (!errors.isEmpty()) {
         ui->statusbar->showMessage(
-            QStringLiteral("Unable to reset local video settings: %1").arg(errorMessage),
+            QStringLiteral("Unable to restore all UVC defaults: %1").arg(errors.first()),
             5000
         );
         return;
     }
 
-    applyVideoSettingsToWidgets(defaults);
-    restartVideoReceiver();
-    ui->statusbar->showMessage(
-        QStringLiteral("Video settings reset: %1").arg(QDir::toNativeSeparators(config.configPath())),
-        5000
-    );
+    ui->statusbar->showMessage(QStringLiteral("UVC controls restored to defaults."), 3000);
 }
 
 void MainWindow::onBrowseRecordingDirectoryClicked()

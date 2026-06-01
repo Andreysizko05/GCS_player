@@ -27,7 +27,8 @@ public:
         int bitrateKbps = 8000;
     };
 
-    explicit GstVideoRecorder(const Settings& settings = {});
+    GstVideoRecorder();
+    explicit GstVideoRecorder(const Settings& settings);
 
     GstVideoRecorder(const GstVideoRecorder&) = delete;
     GstVideoRecorder& operator=(const GstVideoRecorder&) = delete;

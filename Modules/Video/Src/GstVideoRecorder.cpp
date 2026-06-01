@@ -268,6 +268,11 @@ void syncElementWithPipeline(GstElement* element)
 }
 } // namespace
 
+GstVideoRecorder::GstVideoRecorder()
+    : GstVideoRecorder(Settings())
+{
+}
+
 GstVideoRecorder::GstVideoRecorder(const Settings& settings)
     : m_settings(settings)
 {

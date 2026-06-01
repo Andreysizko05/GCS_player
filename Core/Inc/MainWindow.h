@@ -51,6 +51,7 @@ private:
     void refreshUsbModes(const QString& preferredModeCaps = QString());
     void refreshUsbControls(const QMap<QString, UsbCameraControlState>& preferredStates = {});
     void clearUsbControls();
+    void updateUsbDefaultsButtonVisibility();
     QString selectedUsbDeviceId() const;
     QString selectedUsbDeviceName() const;
     int selectedUsbDeviceIndex() const;
@@ -65,7 +66,7 @@ private slots:
     void onVideoContainerChanged(int index);
     void onUsbCameraChanged(int index);
     void onRefreshUsbDevicesClicked();
-    void onResetVideoSettingsClicked();
+    void onUsbDefaultsClicked();
     void onBrowseRecordingDirectoryClicked();
     void onVideoFrameReady(const QVideoFrame& frame);
     void onVideoSizeChanged(const QSize& size);
@@ -90,7 +91,7 @@ private:
     QPushButton* mBrowseRecordingDirectoryButton = nullptr;
     QPlainTextEdit* mCustomPipelineTextEdit = nullptr;
     QPushButton* mRefreshUsbDevicesButton = nullptr;
-    QPushButton* mResetVideoSettingsButton = nullptr;
+    QPushButton* mUsbDefaultsButton = nullptr;
     QGroupBox* mUsbControlsGroupBox = nullptr;
     QFormLayout* mUsbControlsLayout = nullptr;
     QHash<QString, UsbControlWidgets> mUsbControlWidgets;

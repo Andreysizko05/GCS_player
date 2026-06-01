@@ -42,7 +42,6 @@ public:
     QString configPath() const;
     LoadResult loadOrCreate() const;
     bool save(const Settings& settings, QString* errorMessage = nullptr) const;
-    bool reset(QString* errorMessage = nullptr) const;
 
     static QString defaultConfigPath();
 
