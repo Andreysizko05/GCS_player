@@ -2,6 +2,7 @@
 #include "./ui_MainWindow.h"
 
 #include "GstVideoReceiver.h"
+#include "ThrottledSlider.h"
 #include "VideoSettingsConfig.h"
 
 #include <QCheckBox>
@@ -471,7 +472,7 @@ void MainWindow::refreshUsbControls(const QMap<QString, UsbCameraControlState>& 
         autoCheckBox->setChecked(control.supportsAuto && control.state.automatic);
         rowLayout->addWidget(autoCheckBox);
 
-        auto* slider = new QSlider(Qt::Horizontal, rowWidget);
+        auto* slider = new ThrottledSlider(Qt::Horizontal, rowWidget);
         slider->setRange(control.minimum, control.maximum);
         slider->setSingleStep(control.step);
         slider->setPageStep(control.step * 5);
@@ -496,12 +497,18 @@ void MainWindow::refreshUsbControls(const QMap<QString, UsbCameraControlState>& 
         widgets.autoCheckBox = autoCheckBox;
         mUsbControlWidgets.insert(control.id, widgets);
 
-        connect(slider, &QSlider::valueChanged, this, [this, spinBox, controlId = control.id](int value) {
+        connect(slider, &QSlider::valueChanged, this, [this, spinBox](int value) {
             if (mUpdatingUsbUi) {
                 return;
             }
             const QSignalBlocker blocker(spinBox);
             spinBox->setValue(value);
+        });
+        connect(slider, &ThrottledSlider::throttledValueChanged, this, [this, controlId = control.id](int value) {
+            Q_UNUSED(value)
+            if (mUpdatingUsbUi) {
+                return;
+            }
             applyUsbControl(controlId);
         });
         connect(spinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, slider, controlId = control.id](int value) {

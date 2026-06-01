@@ -27,6 +27,7 @@ class QPushButton;
 class QSlider;
 class QSpinBox;
 class QVideoWidget;
+class ThrottledSlider;
 
 class MainWindow : public QMainWindow
 {
@@ -76,7 +77,7 @@ private slots:
 private:
     struct UsbControlWidgets {
         UsbCameraControl control;
-        QSlider* slider = nullptr;
+        ThrottledSlider* slider = nullptr;
         QSpinBox* spinBox = nullptr;
         QCheckBox* autoCheckBox = nullptr;
     };

@@ -76,6 +76,8 @@ set(GCS_PLAYER_SOURCES
     "${GCS_CORE_SRC_DIR}/MainWindow.cpp"
     "${GCS_CORE_INC_DIR}/MainWindow.h"
     "${GCS_CORE_SRC_DIR}/MainWindow.ui"
+    "${GCS_CORE_SRC_DIR}/ThrottledSlider.cpp"
+    "${GCS_CORE_INC_DIR}/ThrottledSlider.h"
     "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoRecorder.cpp"
     "${GCS_VIDEO_MODULE_INC_DIR}/GstVideoRecorder.h"
     "${GCS_VIDEO_MODULE_SRC_DIR}/GstVideoReceiver.cpp"
