@@ -154,6 +154,23 @@ UsbCameraControlState defaultStateForControl(const UsbCameraControl& control)
     state.automatic = control.supportsAuto && control.defaultAutomatic;
     return state;
 }
+
+bool isUsbCameraTransportSelected(const Ui::MainWindow* ui)
+{
+    return transportFromContainerIndex(ui->videoContainerComboBox->currentIndex())
+        == GstVideoReceiver::Transport::UsbCamera;
+}
+
+bool isZoomControlId(const QString& controlId)
+{
+    return controlId.compare(QStringLiteral("camera:zoom"), Qt::CaseInsensitive) == 0;
+}
+
+bool isZoomControl(const UsbCameraControl& control)
+{
+    return isZoomControlId(control.id)
+        || control.displayName.contains(QStringLiteral("zoom"), Qt::CaseInsensitive);
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent, bool startVideoReceiver)
@@ -261,6 +278,12 @@ void MainWindow::setupUsbSettingsUi()
         QOverload<int>::of(&QComboBox::currentIndexChanged),
         this,
         &MainWindow::onUsbCameraChanged
+    );
+    connect(
+        mUsbModeComboBox,
+        QOverload<int>::of(&QComboBox::currentIndexChanged),
+        this,
+        &MainWindow::onUsbModeChanged
     );
     connect(
         mRefreshUsbDevicesButton,
@@ -459,7 +482,7 @@ void MainWindow::refreshUsbControls(const QMap<QString, UsbCameraControlState>& 
         : UsbCameraManager::controls(deviceId);
 
     for (UsbCameraControl& control : controls) {
-        if (preferredStates.contains(control.id)) {
+        if (preferredStates.contains(control.id) && !isZoomControl(control)) {
             control.state = preferredStates.value(control.id);
         }
 
@@ -599,6 +622,10 @@ QMap<QString, UsbCameraControlState> MainWindow::usbControlStatesFromUi() const
 {
     QMap<QString, UsbCameraControlState> states;
     for (auto it = mUsbControlWidgets.cbegin(); it != mUsbControlWidgets.cend(); ++it) {
+        if (isZoomControl(it.value().control)) {
+            continue;
+        }
+
         UsbCameraControlState state;
         state.value = it.value().spinBox != nullptr ? it.value().spinBox->value() : it.value().control.state.value;
         state.automatic = it.value().autoCheckBox != nullptr && it.value().autoCheckBox->isChecked();
@@ -622,6 +649,45 @@ void MainWindow::applyUsbControl(const QString& controlId)
     QString errorMessage;
     if (!UsbCameraManager::setControl(selectedUsbDeviceId(), controlId, state, &errorMessage)) {
         ui->statusbar->showMessage(errorMessage, 5000);
+    }
+}
+
+bool MainWindow::resetZoomControlToDefault()
+{
+    for (auto it = mUsbControlWidgets.cbegin(); it != mUsbControlWidgets.cend(); ++it) {
+        if (!isZoomControl(it.value().control)) {
+            continue;
+        }
+
+        QString errorMessage;
+        if (!UsbCameraManager::setControl(
+                selectedUsbDeviceId(),
+                it.key(),
+                defaultStateForControl(it.value().control),
+                &errorMessage)) {
+            ui->statusbar->showMessage(
+                QStringLiteral("Unable to reset zoom to default: %1").arg(errorMessage),
+                5000
+            );
+            return false;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+void MainWindow::applyUsbSelectionChange()
+{
+    if (!isUsbCameraTransportSelected(ui)) {
+        return;
+    }
+
+    applyVideoSettings();
+    refreshUsbControls();
+    if (resetZoomControlToDefault()) {
+        refreshUsbControls();
     }
 }
 
@@ -774,6 +840,18 @@ void MainWindow::onUsbCameraChanged(int index)
 
     refreshUsbModes();
     refreshUsbControls();
+    applyUsbSelectionChange();
+}
+
+void MainWindow::onUsbModeChanged(int index)
+{
+    Q_UNUSED(index)
+
+    if (mUpdatingUsbUi) {
+        return;
+    }
+
+    applyUsbSelectionChange();
 }
 
 void MainWindow::onRefreshUsbDevicesClicked()

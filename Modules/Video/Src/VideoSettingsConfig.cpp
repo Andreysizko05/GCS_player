@@ -99,6 +99,11 @@ quint16 portFromValue(const QJsonValue& value, quint16 fallback)
 
     return static_cast<quint16>(port);
 }
+
+bool shouldPersistUsbControl(const QString& controlId)
+{
+    return controlId.compare(QStringLiteral("camera:zoom"), Qt::CaseInsensitive) != 0;
+}
 } // namespace
 
 VideoSettingsConfig::VideoSettingsConfig()
@@ -184,6 +189,9 @@ VideoSettingsConfig::LoadResult VideoSettingsConfig::loadOrCreate() const
     );
     const QJsonObject usbControls = config.value(QStringLiteral("usbControls")).toObject();
     for (auto it = usbControls.begin(); it != usbControls.end(); ++it) {
+        if (!shouldPersistUsbControl(it.key())) {
+            continue;
+        }
         if (!it.value().isObject()) {
             continue;
         }
@@ -228,6 +236,10 @@ bool VideoSettingsConfig::save(const Settings& settings, QString* errorMessage) 
 
     QJsonObject usbControls;
     for (auto it = settings.usbControls.cbegin(); it != settings.usbControls.cend(); ++it) {
+        if (!shouldPersistUsbControl(it.key())) {
+            continue;
+        }
+
         QJsonObject controlObject;
         controlObject.insert(QStringLiteral("value"), it.value().value);
         controlObject.insert(QStringLiteral("automatic"), it.value().automatic);

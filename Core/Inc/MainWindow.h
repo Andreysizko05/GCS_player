@@ -59,6 +59,8 @@ private:
     QString selectedUsbModeCaps() const;
     QMap<QString, UsbCameraControlState> usbControlStatesFromUi() const;
     void applyUsbControl(const QString& controlId);
+    bool resetZoomControlToDefault();
+    void applyUsbSelectionChange();
 
     Ui::MainWindow *ui;
 
@@ -66,6 +68,7 @@ private slots:
     void applyVideoSettings();
     void onVideoContainerChanged(int index);
     void onUsbCameraChanged(int index);
+    void onUsbModeChanged(int index);
     void onRefreshUsbDevicesClicked();
     void onUsbDefaultsClicked();
     void onBrowseRecordingDirectoryClicked();
