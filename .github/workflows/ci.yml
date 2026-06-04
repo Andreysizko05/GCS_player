@@ -82,7 +82,7 @@ jobs:
             build/linux-release/*.deb
             build/linux-release/*.tar.gz
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   raspberry-bookworm-arm64:
     name: Debian Bookworm arm64
@@ -146,7 +146,7 @@ jobs:
             build/linux-release/*.deb
             build/linux-release/*.tar.gz
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   windows-x64:
     name: Windows x64
@@ -179,7 +179,7 @@ jobs:
           name: gcs-player-windows-x64
           path: build/windows-release/*.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   release:
     name: Publish release assets
