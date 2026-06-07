@@ -71,3 +71,21 @@ ctest --preset windows-debug
 - Force fresh managed Qt: `-DGCS_QT_FORCE_DOWNLOAD=ON`
 - Use a specific Qt SDK: `-DGCS_ALLOW_EXTERNAL_QT=ON -DGCS_EXTERNAL_QT_ROOT=<path>`
 - Use a specific GStreamer SDK: `-DGCS_ALLOW_EXTERNAL_GSTREAMER=ON -DGCS_EXTERNAL_GSTREAMER_ROOT=<path>`
+
+## License
+
+The GCS_player source code in this repository is licensed under the
+[MIT License](LICENSE) (© 2026 Andrii Syzko).
+
+The project links against and (in binary releases) ships third-party components
+that keep their own licenses:
+
+- **Qt 6** — LGPL-3.0 (or commercial), used via dynamic linking.
+- **GStreamer** — core and base plugins under LGPL-2.1; some optional plugins
+  are GPL (e.g. `x264enc`, parts of `gst-libav`).
+
+MIT covers only this repository's own code. These dependencies are **not**
+committed here (CMake bootstrap downloads them). When distributing **prebuilt
+binaries** that bundle GStreamer plugins, the licenses of those plugins
+(LGPL/GPL) apply to the combined distribution — check which plugins are bundled
+before publishing release binaries.
