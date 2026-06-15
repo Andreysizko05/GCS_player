@@ -4,6 +4,8 @@
 #include <QElapsedTimer>
 #include <QSlider>
 
+class QTimer;
+
 class ThrottledSlider : public QSlider
 {
     Q_OBJECT
@@ -21,11 +23,15 @@ signals:
 private:
     void setupConnections();
     void emitThrottledValue(int value);
+    void scheduleTrailingEmit(int value);
 
     QElapsedTimer mApplyClock;
+    QTimer* mTrailingTimer = nullptr;
     int mApplyIntervalMs = 200;
     int mLastEmittedValue = 0;
     bool mHasLastEmittedValue = false;
+    int mPendingValue = 0;
+    bool mHasPendingValue = false;
 };
 
 #endif // THROTTLEDSLIDER_H
