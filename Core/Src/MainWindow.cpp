@@ -384,6 +384,9 @@ VideoSettingsConfig::Settings MainWindow::currentVideoSettings() const
     settings.usbDeviceId = selectedUsbDeviceId();
     settings.usbDeviceName = selectedUsbDeviceName();
     settings.usbDeviceIndex = selectedUsbDeviceIndex();
+    settings.usbSourceElement = selectedUsbSourceElement();
+    settings.usbSourcePath = selectedUsbSourcePath();
+    settings.usbSourceIndex = selectedUsbSourceIndex();
     settings.usbModeCaps = selectedUsbModeCaps();
     settings.usbControls = usbControlStatesFromUi();
     if (mCustomPipelineTextEdit != nullptr) {
@@ -417,16 +420,15 @@ void MainWindow::refreshUsbDevices(const QString& preferredDeviceId)
             ? device.displayName
             : QStringLiteral("%1 (%2)").arg(device.displayName, device.backend);
         mUsbCameraComboBox->addItem(label, device.id);
-        mUsbCameraComboBox->setItemData(
-            mUsbCameraComboBox->count() - 1,
-            device.displayName,
-            Qt::UserRole + 1
-        );
-        mUsbCameraComboBox->setItemData(
-            mUsbCameraComboBox->count() - 1,
-            device.index,
-            Qt::UserRole + 2
-        );
+        const int itemIndex = mUsbCameraComboBox->count() - 1;
+        mUsbCameraComboBox->setItemData(itemIndex, device.displayName, Qt::UserRole + 1);
+        mUsbCameraComboBox->setItemData(itemIndex, device.index, Qt::UserRole + 2);
+        // Kept separate from id/index on purpose: those two address the DirectShow enumeration
+        // that UVC controls bind through, these three address the enumeration the capture element
+        // actually opens. Mixing them up opens a different camera than the one selected here.
+        mUsbCameraComboBox->setItemData(itemIndex, device.sourceElement, Qt::UserRole + 3);
+        mUsbCameraComboBox->setItemData(itemIndex, device.sourcePath, Qt::UserRole + 4);
+        mUsbCameraComboBox->setItemData(itemIndex, device.sourceIndex, Qt::UserRole + 5);
     }
 
     const int preferredIndex = preferredDeviceId.isEmpty()
@@ -611,6 +613,29 @@ int MainWindow::selectedUsbDeviceIndex() const
         : -1;
 }
 
+QString MainWindow::selectedUsbSourceElement() const
+{
+    return mUsbCameraComboBox != nullptr
+        ? mUsbCameraComboBox->currentData(Qt::UserRole + 3).toString()
+        : QString();
+}
+
+QString MainWindow::selectedUsbSourcePath() const
+{
+    return mUsbCameraComboBox != nullptr
+        ? mUsbCameraComboBox->currentData(Qt::UserRole + 4).toString()
+        : QString();
+}
+
+int MainWindow::selectedUsbSourceIndex() const
+{
+    if (mUsbCameraComboBox == nullptr) {
+        return -1;
+    }
+    const QVariant value = mUsbCameraComboBox->currentData(Qt::UserRole + 5);
+    return value.isValid() ? value.toInt() : -1;
+}
+
 QString MainWindow::selectedUsbModeCaps() const
 {
     return mUsbModeComboBox != nullptr
@@ -735,6 +760,9 @@ void MainWindow::restartVideoReceiver()
     settings.usbDeviceId = videoSettings.usbDeviceId;
     settings.usbDeviceName = videoSettings.usbDeviceName;
     settings.usbDeviceIndex = videoSettings.usbDeviceIndex;
+    settings.usbSourceElement = videoSettings.usbSourceElement;
+    settings.usbSourcePath = videoSettings.usbSourcePath;
+    settings.usbSourceIndex = videoSettings.usbSourceIndex;
     settings.usbModeCaps = videoSettings.usbModeCaps;
     settings.usbControls = videoSettings.usbControls;
     settings.recordingEnabled = videoSettings.recordingEnabled;
@@ -934,10 +962,12 @@ void MainWindow::onVideoSizeChanged(const QSize& size)
 
 void MainWindow::onVideoReceiverMessage(const QString& message)
 {
+    qInfo("[VideoReceiver] %s", qUtf8Printable(message));
     ui->statusbar->showMessage(message, 3000);
 }
 
 void MainWindow::onVideoReceiverError(const QString& message)
 {
+    qWarning("[VideoReceiver] %s", qUtf8Printable(message));
     ui->statusbar->showMessage(message, 5000);
 }

@@ -56,6 +56,9 @@ private:
     QString selectedUsbDeviceId() const;
     QString selectedUsbDeviceName() const;
     int selectedUsbDeviceIndex() const;
+    QString selectedUsbSourceElement() const;
+    QString selectedUsbSourcePath() const;
+    int selectedUsbSourceIndex() const;
     QString selectedUsbModeCaps() const;
     QMap<QString, UsbCameraControlState> usbControlStatesFromUi() const;
     void applyUsbControl(const QString& controlId);

@@ -2,16 +2,50 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDateTime>
 #include <QLocale>
+#include <QTextStream>
 #include <QTimer>
 #include <QTranslator>
+
+#include <cstdio>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
 
+namespace {
+
+FILE* gLogFile = nullptr;
+
+void fileMessageHandler(QtMsgType type, const QMessageLogContext&, const QString& message)
+{
+    if (gLogFile == nullptr) {
+        return;
+    }
+    const char* level = "DEBUG";
+    switch (type) {
+    case QtInfoMsg: level = "INFO"; break;
+    case QtWarningMsg: level = "WARNING"; break;
+    case QtCriticalMsg: level = "CRITICAL"; break;
+    case QtFatalMsg: level = "FATAL"; break;
+    default: break;
+    }
+    std::fprintf(gLogFile, "%s [%s] %s\n",
+        qUtf8Printable(QDateTime::currentDateTime().toString(Qt::ISODateWithMs)),
+        level,
+        qUtf8Printable(message));
+    std::fflush(gLogFile);
+}
+
+} // namespace
+
 int main(int argc, char *argv[])
 {
+    gLogFile = std::fopen("gcs_player_debug.log", "a");
+    if (gLogFile != nullptr) {
+        qInstallMessageHandler(fileMessageHandler);
+    }
 #ifdef Q_OS_WIN
     const UINT previousErrorMode = SetErrorMode(0);
     SetErrorMode(previousErrorMode

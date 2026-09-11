@@ -178,6 +178,9 @@ VideoSettingsConfig::LoadResult VideoSettingsConfig::loadOrCreate() const
     result.settings.usbDeviceId = config.value(QStringLiteral("usbDeviceId")).toString();
     result.settings.usbDeviceName = config.value(QStringLiteral("usbDeviceName")).toString();
     result.settings.usbDeviceIndex = config.value(QStringLiteral("usbDeviceIndex")).toInt(-1);
+    result.settings.usbSourceElement = config.value(QStringLiteral("usbSourceElement")).toString();
+    result.settings.usbSourcePath = config.value(QStringLiteral("usbSourcePath")).toString();
+    result.settings.usbSourceIndex = config.value(QStringLiteral("usbSourceIndex")).toInt(-1);
     result.settings.usbModeCaps = config.value(QStringLiteral("usbModeCaps")).toString();
     result.settings.recordingEnabled = config.value(QStringLiteral("recordingEnabled")).toBool(false);
     result.settings.recordingContainer = recordingContainerFromName(
@@ -228,6 +231,9 @@ bool VideoSettingsConfig::save(const Settings& settings, QString* errorMessage) 
     config.insert(QStringLiteral("usbDeviceId"), settings.usbDeviceId);
     config.insert(QStringLiteral("usbDeviceName"), settings.usbDeviceName);
     config.insert(QStringLiteral("usbDeviceIndex"), settings.usbDeviceIndex);
+    config.insert(QStringLiteral("usbSourceElement"), settings.usbSourceElement);
+    config.insert(QStringLiteral("usbSourcePath"), settings.usbSourcePath);
+    config.insert(QStringLiteral("usbSourceIndex"), settings.usbSourceIndex);
     config.insert(QStringLiteral("usbModeCaps"), settings.usbModeCaps);
     config.insert(QStringLiteral("recordingEnabled"), settings.recordingEnabled);
     config.insert(QStringLiteral("recordingContainer"), recordingContainerName(settings.recordingContainer));

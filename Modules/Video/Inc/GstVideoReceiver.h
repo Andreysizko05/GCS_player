@@ -53,9 +53,16 @@ public:
         int restartDelayMs = 1000;
         int appSinkMaxBuffers = 1;
         QString appSinkFormat = QStringLiteral("BGRA");
+        // Identity only: usbDeviceId is the UsbCameraDevice::id that UVC control binding uses
+        // (a DirectShow moniker on Windows) and usbDeviceIndex the ordinal of that same
+        // enumeration. Neither may be handed to a capture element - see configureUsbSourceElement.
         QString usbDeviceId;
         QString usbDeviceName;
         int usbDeviceIndex = -1;
+        // Stream opening, copied from UsbCameraDevice::sourceElement/sourcePath/sourceIndex.
+        QString usbSourceElement;
+        QString usbSourcePath;
+        int usbSourceIndex = -1;
         QString usbModeCaps;
         QMap<QString, UsbCameraControlState> usbControls;
         bool recordingEnabled = false;

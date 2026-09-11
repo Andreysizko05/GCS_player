@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
 #include <QtGlobal>
@@ -211,6 +212,44 @@ QString deviceIdFromProperties(const GstStructure* properties)
     return {};
 }
 
+struct UsbDeviceIdentity
+{
+    quint16 vendorId = 0;
+    quint16 productId = 0;
+    int interfaceIndex = -1;
+    QString instanceKey;
+};
+
+// The same physical device is described by different strings in each Windows enumeration: the
+// DirectShow moniker adds an "@device:pnp:" prefix and the KSCATEGORY_CAPTURE interface GUID, while
+// Media Foundation uses the KSCATEGORY_VIDEO_CAMERA GUID and no prefix. Everything between "usb#"
+// and the interface GUID is identical, so it is the only safe join key between the two lists.
+UsbDeviceIdentity parseUsbIdentity(const QString& idOrPath)
+{
+    UsbDeviceIdentity identity;
+    if (idOrPath.isEmpty()) {
+        return identity;
+    }
+
+    static const QRegularExpression pattern(
+        QStringLiteral("usb#vid_([0-9a-f]{4})&pid_([0-9a-f]{4})(?:&mi_([0-9]{2}))?#([^#]+)"),
+        QRegularExpression::CaseInsensitiveOption
+    );
+
+    const QRegularExpressionMatch match = pattern.match(idOrPath);
+    if (!match.hasMatch()) {
+        return identity;
+    }
+
+    identity.vendorId = static_cast<quint16>(match.captured(1).toUShort(nullptr, 16));
+    identity.productId = static_cast<quint16>(match.captured(2).toUShort(nullptr, 16));
+    if (!match.captured(3).isEmpty()) {
+        identity.interfaceIndex = match.captured(3).toInt();
+    }
+    identity.instanceKey = match.captured(0).toLower();
+    return identity;
+}
+
 QString platformVideoApiName()
 {
 #ifdef Q_OS_WIN
@@ -250,6 +289,70 @@ QString backendLabelFromApi(const QString& api)
     }
 
     return api.isEmpty() ? UsbCameraManager::sourceFactoryName() : api;
+}
+
+QString sourceElementNameFromApi(const QString& api)
+{
+    if (api.contains(QStringLiteral("mediafoundation"), Qt::CaseInsensitive)) {
+        return QStringLiteral("mfvideosrc");
+    }
+    if (api.contains(QStringLiteral("directshow"), Qt::CaseInsensitive)
+        || api.contains(QStringLiteral("ksvideosrc"), Qt::CaseInsensitive)) {
+        return QStringLiteral("ksvideosrc");
+    }
+    if (api.contains(QStringLiteral("v4l2"), Qt::CaseInsensitive)) {
+        return QStringLiteral("v4l2src");
+    }
+    if (api.contains(QStringLiteral("avfoundation"), Qt::CaseInsensitive)) {
+        return QStringLiteral("avfvideosrc");
+    }
+
+    return UsbCameraManager::sourceFactoryName();
+}
+
+// Ask the provider itself which element it would build, so sourcePath/sourceIndex are always
+// reported against the element that really accepts them; the api mapping is only a fallback.
+QString sourceElementNameFromDevice(GstDevice* device, const QString& api)
+{
+    QString result;
+    if (device != nullptr) {
+        GstElement* element = gst_device_create_element(device, nullptr);
+        if (element != nullptr) {
+            GstElementFactory* factory = gst_element_get_factory(element);
+            if (factory != nullptr) {
+                result = QString::fromUtf8(GST_OBJECT_NAME(factory));
+            }
+            gst_object_unref(element);
+        }
+    }
+
+    return result.isEmpty() ? sourceElementNameFromApi(api) : result;
+}
+
+QString capsDescription(GstCaps* caps)
+{
+    if (caps == nullptr) {
+        return QStringLiteral("<none>");
+    }
+
+    gchar* text = gst_caps_to_string(caps);
+    const QString result = QString::fromUtf8(text != nullptr ? text : "");
+    g_free(text);
+    return result.isEmpty() ? QStringLiteral("<empty>") : result;
+}
+
+QString gstDeviceCapsDescription(GstDevice* device)
+{
+    if (device == nullptr) {
+        return QStringLiteral("<none>");
+    }
+
+    GstCaps* caps = gst_device_get_caps(device);
+    const QString result = capsDescription(caps);
+    if (caps != nullptr) {
+        gst_caps_unref(caps);
+    }
+    return result;
 }
 
 #ifdef Q_OS_WIN
@@ -367,8 +470,15 @@ IEnumMoniker* videoDeviceEnumerator()
     return result == S_OK ? enumMoniker : nullptr;
 }
 
-IMoniker* findVideoDeviceMoniker(const QString& deviceId)
+IMoniker* findVideoDeviceMoniker(const QString& deviceId, QStringList* presentNames = nullptr)
 {
+    // An empty id used to fall through to "first device in the enumeration", which silently bound
+    // the UVC sliders to whichever camera DirectShow happened to list first - the integrated one on
+    // a laptop - instead of reporting that the caller has no device selected.
+    if (deviceId.isEmpty()) {
+        return nullptr;
+    }
+
     IEnumMoniker* enumMoniker = videoDeviceEnumerator();
     if (enumMoniker == nullptr) {
         return nullptr;
@@ -379,9 +489,10 @@ IMoniker* findVideoDeviceMoniker(const QString& deviceId)
     while (enumMoniker->Next(1, &moniker, &fetched) == S_OK) {
         const QString displayName = monikerDisplayName(moniker);
         const QString friendlyName = monikerFriendlyName(moniker);
-        if (deviceId.isEmpty()
-            || displayName == deviceId
-            || friendlyName == deviceId) {
+        if (presentNames != nullptr) {
+            presentNames->append(friendlyName.isEmpty() ? displayName : friendlyName);
+        }
+        if (displayName == deviceId || friendlyName == deviceId) {
             releaseCom(enumMoniker);
             return moniker;
         }
@@ -393,16 +504,45 @@ IMoniker* findVideoDeviceMoniker(const QString& deviceId)
     return nullptr;
 }
 
-IBaseFilter* bindVideoFilter(const QString& deviceId)
+IBaseFilter* bindVideoFilter(const QString& deviceId, QString* failureReason = nullptr)
 {
-    IMoniker* moniker = findVideoDeviceMoniker(deviceId);
+    if (deviceId.isEmpty()) {
+        if (failureReason != nullptr) {
+            *failureReason = QStringLiteral("no camera selected, refusing to bind UVC controls to an arbitrary device");
+        }
+        return nullptr;
+    }
+
+    QStringList presentNames;
+    IMoniker* moniker = findVideoDeviceMoniker(deviceId, &presentNames);
     if (moniker == nullptr) {
+        if (failureReason != nullptr) {
+            *failureReason = QStringLiteral("no DirectShow moniker matches id '%1'; present: %2")
+                .arg(deviceId, presentNames.isEmpty()
+                    ? QStringLiteral("<none>")
+                    : presentNames.join(QStringLiteral(", ")));
+        }
         return nullptr;
     }
 
     IBaseFilter* filter = nullptr;
-    moniker->BindToObject(nullptr, nullptr, IID_IBaseFilter, reinterpret_cast<void**>(&filter));
+    const HRESULT bindResult = moniker->BindToObject(
+        nullptr,
+        nullptr,
+        IID_IBaseFilter,
+        reinterpret_cast<void**>(&filter)
+    );
     releaseCom(moniker);
+    if (FAILED(bindResult) || filter == nullptr) {
+        releaseCom(filter);
+        if (failureReason != nullptr) {
+            *failureReason = QStringLiteral("moniker '%1' found but BindToObject failed: 0x%2")
+                .arg(deviceId)
+                .arg(static_cast<quint32>(bindResult), 8, 16, QLatin1Char('0'));
+        }
+        return nullptr;
+    }
+
     return filter;
 }
 
@@ -1016,11 +1156,13 @@ QVector<UsbCameraDevice> devicesFromGStreamer()
 
     GstDeviceMonitor* monitor = gst_device_monitor_new();
     if (monitor == nullptr) {
+        qWarning("[UsbCameraManager] devicesFromGStreamer: unable to create a GstDeviceMonitor.");
         return result;
     }
 
     gst_device_monitor_add_filter(monitor, "Video/Source", nullptr);
     if (!gst_device_monitor_start(monitor)) {
+        qWarning("[UsbCameraManager] devicesFromGStreamer: GstDeviceMonitor failed to start.");
         gst_object_unref(monitor);
         return result;
     }
@@ -1031,17 +1173,26 @@ QVector<UsbCameraDevice> devicesFromGStreamer()
         GstDevice* gstDevice = GST_DEVICE(item->data);
         GstStructure* properties = gst_device_get_properties(gstDevice);
         const QString api = structureStringField(properties, "device.api");
+        gchar* displayNameRaw = gst_device_get_display_name(gstDevice);
+        const QString gstDisplayName = QString::fromUtf8(displayNameRaw != nullptr ? displayNameRaw : "");
+        g_free(displayNameRaw);
         if (!apiMatchesPlatform(api)) {
+            qWarning(
+                "[UsbCameraManager] gst device dropped: displayName='%s' rejected device.api='%s' "
+                "(expected '%s') caps=%s",
+                qUtf8Printable(gstDisplayName),
+                qUtf8Printable(api.isEmpty() ? QStringLiteral("<absent>") : api),
+                qUtf8Printable(platformVideoApiName()),
+                qUtf8Printable(gstDeviceCapsDescription(gstDevice))
+            );
             if (properties != nullptr) {
                 gst_structure_free(properties);
             }
             continue;
         }
 
-        gchar* displayNameRaw = gst_device_get_display_name(gstDevice);
         UsbCameraDevice device;
-        device.displayName = QString::fromUtf8(displayNameRaw != nullptr ? displayNameRaw : "");
-        g_free(displayNameRaw);
+        device.displayName = gstDisplayName;
         device.id = deviceIdFromProperties(properties);
         if (device.id.isEmpty()) {
             device.id = device.displayName;
@@ -1053,8 +1204,25 @@ QVector<UsbCameraDevice> devicesFromGStreamer()
         }
         device.backend = backendLabelFromApi(api);
         device.index = platformIndex;
+        device.sourceElement = sourceElementNameFromDevice(gstDevice, api);
+        device.sourcePath = structureStringField(properties, "device.path");
+        if (device.sourcePath.isEmpty()) {
+            device.sourcePath = deviceIdFromProperties(properties);
+        }
+        device.sourceIndex = platformIndex;
         result.append(device);
         ++platformIndex;
+
+        qInfo(
+            "[UsbCameraManager] gst device: sourceIndex=%d displayName='%s' device.api='%s' "
+            "sourceElement='%s' device.path='%s' caps=%s",
+            device.sourceIndex,
+            qUtf8Printable(device.displayName),
+            qUtf8Printable(api),
+            qUtf8Printable(device.sourceElement),
+            qUtf8Printable(device.sourcePath),
+            qUtf8Printable(gstDeviceCapsDescription(gstDevice))
+        );
 
         if (properties != nullptr) {
             gst_structure_free(properties);
@@ -1064,6 +1232,11 @@ QVector<UsbCameraDevice> devicesFromGStreamer()
     g_list_free_full(devices, reinterpret_cast<GDestroyNotify>(gst_object_unref));
     gst_device_monitor_stop(monitor);
     gst_object_unref(monitor);
+
+    if (result.isEmpty()) {
+        qWarning("[UsbCameraManager] devicesFromGStreamer: no device matched device.api='%s'.",
+            qUtf8Printable(platformVideoApiName()));
+    }
     return result;
 }
 
@@ -1088,6 +1261,7 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
         return result;
     }
 
+    const QString preferredInstanceKey = parseUsbIdentity(preferredId).instanceKey;
     GList* devices = gst_device_monitor_get_devices(monitor);
     int platformIndex = 0;
     GstDevice* matchedDevice = nullptr;
@@ -1100,14 +1274,32 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
             gchar* displayNameRaw = gst_device_get_display_name(device);
             const QString displayName = QString::fromUtf8(displayNameRaw != nullptr ? displayNameRaw : "");
             g_free(displayNameRaw);
+            const QString instanceKey = parseUsbIdentity(id).instanceKey;
             const bool idMatches = !preferredId.isEmpty() && id == preferredId;
+            const bool instanceMatches = !preferredInstanceKey.isEmpty()
+                && instanceKey == preferredInstanceKey;
             const bool nameMatches = !preferredName.isEmpty()
-                && displayName.compare(preferredName, Qt::CaseInsensitive) == 0;
-            const bool indexMatches = preferredIndex >= 0 && preferredIndex == platformIndex;
-            if (idMatches
-                || nameMatches
-                || indexMatches
-                || (preferredId.isEmpty() && preferredName.isEmpty() && preferredIndex < 0 && matchedDevice == nullptr)) {
+                && displayName.trimmed().compare(preferredName.trimmed(), Qt::CaseInsensitive) == 0;
+            // No index rule: preferredIndex may come from a foreign enumeration, so matching on it
+            // silently returns the modes of an unrelated camera.
+            const bool firstDeviceFallback = preferredId.isEmpty()
+                && preferredName.isEmpty()
+                && preferredIndex < 0
+                && matchedDevice == nullptr;
+            const char* rule = idMatches
+                ? "id"
+                : (instanceMatches ? "usb-instance" : (nameMatches ? "name" : (firstDeviceFallback ? "first-device" : "none")));
+            qInfo(
+                "[UsbCameraManager] modes candidate: platformIndex=%d displayName='%s' device.api='%s' "
+                "device.path='%s' instanceKey='%s' rule=%s",
+                platformIndex,
+                qUtf8Printable(displayName),
+                qUtf8Printable(api),
+                qUtf8Printable(id),
+                qUtf8Printable(instanceKey),
+                rule
+            );
+            if (idMatches || instanceMatches || nameMatches || firstDeviceFallback) {
                 matchedDevice = GST_DEVICE(gst_object_ref(device));
                 if (properties != nullptr) {
                     gst_structure_free(properties);
@@ -1115,6 +1307,16 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
                 break;
             }
             ++platformIndex;
+        } else {
+            gchar* displayNameRaw = gst_device_get_display_name(device);
+            qWarning(
+                "[UsbCameraManager] modes candidate dropped: displayName='%s' rejected device.api='%s' "
+                "(expected '%s')",
+                displayNameRaw != nullptr ? displayNameRaw : "",
+                qUtf8Printable(api.isEmpty() ? QStringLiteral("<absent>") : api),
+                qUtf8Printable(platformVideoApiName())
+            );
+            g_free(displayNameRaw);
         }
         if (properties != nullptr) {
             gst_structure_free(properties);
@@ -1123,6 +1325,7 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
 
     if (matchedDevice != nullptr) {
         GstCaps* caps = gst_device_get_caps(matchedDevice);
+        qInfo("[UsbCameraManager] modes matched device caps=%s", qUtf8Printable(capsDescription(caps)));
         if (caps != nullptr) {
             QSet<QString> seenCaps;
             for (guint index = 0; index < gst_caps_get_size(caps); ++index) {
@@ -1136,6 +1339,14 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
             gst_caps_unref(caps);
         }
         gst_object_unref(matchedDevice);
+    } else {
+        qWarning(
+            "[UsbCameraManager] modes: no GstDevice matched preferredId='%s' preferredName='%s' "
+            "preferredIndex=%d (mode list will be empty).",
+            qUtf8Printable(preferredId),
+            qUtf8Printable(preferredName),
+            preferredIndex
+        );
     }
 
     g_list_free_full(devices, reinterpret_cast<GDestroyNotify>(gst_object_unref));
@@ -1143,6 +1354,20 @@ QVector<UsbCameraMode> modesFromGStreamerDeviceCaps(
     gst_object_unref(monitor);
 
     sortModes(result);
+    if (result.isEmpty()) {
+        qWarning("[UsbCameraManager] modes: no usable mode found for preferredId='%s' preferredName='%s'.",
+            qUtf8Printable(preferredId),
+            qUtf8Printable(preferredName));
+    } else {
+        QStringList labels;
+        labels.reserve(result.size());
+        for (const UsbCameraMode& mode : result) {
+            labels.append(mode.label);
+        }
+        qInfo("[UsbCameraManager] modes: %d mode(s) -> %s",
+            static_cast<int>(result.size()),
+            qUtf8Printable(labels.join(QStringLiteral(" | "))));
+    }
     return result;
 }
 
@@ -1588,35 +1813,129 @@ QVector<UsbCameraDevice> UsbCameraManager::devices()
 #ifdef Q_OS_WIN
     ComScope com;
     if (!com.ok()) {
+        qWarning("[UsbCameraManager] devices: COM initialization failed, cannot enumerate cameras.");
         return result;
     }
+
+    // Two enumerations describe the same hardware and neither is sufficient on its own: Media
+    // Foundation is what opens the stream (and is the only one whose path/ordinal mfvideosrc
+    // accepts), DirectShow is what binds IAMVideoProcAmp/IAMCameraControl for the UVC sliders.
+    QVector<UsbCameraDevice> captureDevices = devicesFromGStreamer();
+    QVector<bool> captureClaimed(captureDevices.size(), false);
 
     IEnumMoniker* enumMoniker = videoDeviceEnumerator();
     if (enumMoniker == nullptr) {
-        return result;
-    }
+        qWarning("[UsbCameraManager] devices: DirectShow enumerator unavailable, UVC controls will be missing.");
+    } else {
+        int index = 0;
+        IMoniker* moniker = nullptr;
+        ULONG fetched = 0;
+        while (enumMoniker->Next(1, &moniker, &fetched) == S_OK) {
+            UsbCameraDevice device;
+            device.controlId = monikerDisplayName(moniker);
+            device.id = device.controlId;
+            device.displayName = monikerFriendlyName(moniker);
+            device.backend = QStringLiteral("DirectShow");
+            device.index = index;
 
-    int index = 0;
-    IMoniker* moniker = nullptr;
-    ULONG fetched = 0;
-    while (enumMoniker->Next(1, &moniker, &fetched) == S_OK) {
-        UsbCameraDevice device;
-        device.id = monikerDisplayName(moniker);
-        device.displayName = monikerFriendlyName(moniker);
-        if (device.displayName.isEmpty()) {
-            device.displayName = device.id.isEmpty()
-                ? QStringLiteral("USB camera %1").arg(index + 1)
-                : device.id;
+            const QString instanceKey = parseUsbIdentity(device.controlId).instanceKey;
+            int captureMatch = -1;
+            if (!instanceKey.isEmpty()) {
+                for (int candidate = 0; candidate < captureDevices.size(); ++candidate) {
+                    if (captureClaimed[candidate]) {
+                        continue;
+                    }
+                    if (parseUsbIdentity(captureDevices[candidate].sourcePath).instanceKey == instanceKey) {
+                        captureMatch = candidate;
+                        break;
+                    }
+                }
+            }
+            if (captureMatch < 0 && !device.displayName.isEmpty()) {
+                // Fall back to the friendly name only when it is unambiguous: two units of the same
+                // model report the same name, and guessing would open the wrong camera.
+                int nameCandidate = -1;
+                int nameMatches = 0;
+                for (int candidate = 0; candidate < captureDevices.size(); ++candidate) {
+                    if (captureClaimed[candidate]) {
+                        continue;
+                    }
+                    if (captureDevices[candidate].displayName.trimmed()
+                            .compare(device.displayName.trimmed(), Qt::CaseInsensitive) == 0) {
+                        ++nameMatches;
+                        if (nameCandidate < 0) {
+                            nameCandidate = candidate;
+                        }
+                    }
+                }
+                if (nameMatches == 1) {
+                    captureMatch = nameCandidate;
+                }
+            }
+
+            if (captureMatch >= 0) {
+                const UsbCameraDevice& capture = captureDevices[captureMatch];
+                captureClaimed[captureMatch] = true;
+                device.sourceElement = capture.sourceElement;
+                device.sourcePath = capture.sourcePath;
+                device.sourceIndex = capture.sourceIndex;
+                if (!capture.displayName.isEmpty()) {
+                    device.displayName = capture.displayName;
+                }
+                if (!capture.backend.isEmpty()) {
+                    device.backend = capture.backend;
+                }
+            }
+
+            if (device.displayName.isEmpty()) {
+                device.displayName = device.id.isEmpty()
+                    ? QStringLiteral("USB camera %1").arg(index + 1)
+                    : device.id;
+            }
+            if (device.id.isEmpty()) {
+                device.id = device.sourcePath.isEmpty() ? device.displayName : device.sourcePath;
+            }
+            result.append(device);
+
+            releaseCom(moniker);
+            ++index;
         }
-        device.backend = QStringLiteral("DirectShow");
-        device.index = index;
-        result.append(device);
 
-        releaseCom(moniker);
-        ++index;
+        releaseCom(enumMoniker);
     }
 
-    releaseCom(enumMoniker);
+    // A camera GStreamer can open but DirectShow cannot bind is still usable, it simply has no
+    // UVC controls, so it must not disappear from the list.
+    for (int candidate = 0; candidate < captureDevices.size(); ++candidate) {
+        if (!captureClaimed[candidate]) {
+            result.append(captureDevices[candidate]);
+        }
+    }
+
+    for (const UsbCameraDevice& device : result) {
+        qInfo(
+            "[UsbCameraManager] device: index=%d sourceIndex=%d backend='%s' sourceElement='%s' "
+            "displayName='%s' id='%s' controlId='%s' sourcePath='%s'",
+            device.index,
+            device.sourceIndex,
+            qUtf8Printable(device.backend),
+            qUtf8Printable(device.sourceElement.isEmpty()
+                ? QStringLiteral("<none>")
+                : device.sourceElement),
+            qUtf8Printable(device.displayName),
+            qUtf8Printable(device.id),
+            qUtf8Printable(device.controlId.isEmpty() ? QStringLiteral("<none>") : device.controlId),
+            qUtf8Printable(device.sourcePath.isEmpty() ? QStringLiteral("<none>") : device.sourcePath)
+        );
+    }
+
+    if (result.isEmpty()) {
+        qWarning("[UsbCameraManager] devices: no USB camera enumerated by DirectShow or Media Foundation.");
+    } else {
+        qInfo("[UsbCameraManager] devices: %d camera(s) enumerated (%d openable by a GStreamer source).",
+            static_cast<int>(result.size()),
+            static_cast<int>(captureDevices.size()));
+    }
 #else
 #ifdef Q_OS_LINUX
     appendV4l2NodeDevices(result);
@@ -1639,7 +1958,16 @@ QVector<UsbCameraMode> UsbCameraManager::modes(const QString& deviceId, int devi
         IMoniker* moniker = findVideoDeviceMoniker(deviceId);
         const QString friendlyName = monikerFriendlyName(moniker);
         releaseCom(moniker);
-        result = modesFromGStreamerDeviceCaps({}, friendlyName, deviceIndex);
+        qInfo("[UsbCameraManager] modes requested: deviceId='%s' resolvedName='%s' deviceIndex=%d",
+            qUtf8Printable(deviceId),
+            qUtf8Printable(friendlyName.isEmpty() ? QStringLiteral("<unresolved>") : friendlyName),
+            deviceIndex);
+        // deviceId is passed as the preferred id so the USB instance key can join the DirectShow
+        // moniker to the Media Foundation device; the friendly name is only a secondary rule.
+        result = modesFromGStreamerDeviceCaps(deviceId, friendlyName, deviceIndex);
+    } else {
+        qWarning("[UsbCameraManager] modes: COM initialization failed for deviceId='%s'.",
+            qUtf8Printable(deviceId));
     }
     return result;
 #else
@@ -1662,8 +1990,10 @@ QVector<UsbCameraControl> UsbCameraManager::controls(const QString& deviceId)
         return result;
     }
 
-    IBaseFilter* filter = bindVideoFilter(deviceId);
+    QString bindFailure;
+    IBaseFilter* filter = bindVideoFilter(deviceId, &bindFailure);
     if (filter == nullptr) {
+        qWarning("[UsbCameraManager] controls: %s", qUtf8Printable(bindFailure));
         return result;
     }
 
@@ -1728,10 +2058,12 @@ bool UsbCameraManager::setControl(
         return false;
     }
 
-    IBaseFilter* filter = bindVideoFilter(deviceId);
+    QString bindFailure;
+    IBaseFilter* filter = bindVideoFilter(deviceId, &bindFailure);
     if (filter == nullptr) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("Unable to open the selected USB camera.");
+            *errorMessage = QStringLiteral("Cannot apply UVC control %1 (deviceId=%2): %3")
+                .arg(controlId, deviceId, bindFailure);
         }
         return false;
     }
@@ -1789,7 +2121,9 @@ bool UsbCameraManager::setControl(
     releaseCom(filter);
     if (FAILED(result)) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("Unable to set UVC control %1.").arg(controlId);
+            *errorMessage = QStringLiteral("Cannot apply UVC control %1 (deviceId=%2): 0x%3")
+                .arg(controlId, deviceId)
+                .arg(static_cast<quint32>(result), 8, 16, QLatin1Char('0'));
         }
         return false;
     }

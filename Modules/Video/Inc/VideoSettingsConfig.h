@@ -21,6 +21,9 @@ public:
         QString usbDeviceId;
         QString usbDeviceName;
         int usbDeviceIndex = -1;
+        QString usbSourceElement;
+        QString usbSourcePath;
+        int usbSourceIndex = -1;
         QString usbModeCaps;
         QMap<QString, UsbCameraControlState> usbControls;
         bool recordingEnabled = false;

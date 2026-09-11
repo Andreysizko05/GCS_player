@@ -15,11 +15,28 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 namespace
 {
 constexpr int kPlaceholderWidth = 1280;
 constexpr int kPlaceholderHeight = 720;
+
+// Counts detached teardown threads (see GstVideoReceiver::destroyPipeline()) that
+// have not yet released their mfvideosrc device. Only one physical USB camera is
+// ever in use at a time, so this is process-wide rather than per-instance: opening
+// a new mfvideosrc while a previous one's teardown is still in flight is what
+// Media Foundation reports as "device preempted by another immersive application"
+// (HRESULT 0xc00d3ea3), so a retry must wait for it to clear first.
+std::atomic<int> g_pendingUsbTeardowns{0};
+
+// Upper bound on how long a retry waits for a previous mfvideosrc teardown to
+// finish before proceeding anyway. A stuck mfvideosrc can hang forever (see
+// destroyPipeline()), so this cannot be unbounded without reintroducing the same
+// freeze one layer up; capping it just makes the collision the exception again
+// instead of the common case.
+constexpr int kUsbTeardownWaitCapMs = 3000;
+constexpr int kUsbTeardownPollIntervalMs = 100;
 
 bool elementHasProperty(GstElement* element, const char* propertyName)
 {
@@ -119,6 +136,15 @@ void configureAppSinkElement(GstElement* appSink, const GstVideoReceiver::Stream
     gst_caps_unref(sinkCaps);
 }
 
+// The factory that settings.usbSourcePath/usbSourceIndex were enumerated from. Falling back to
+// the platform default is only correct when nothing enumerated the device, because a path from one
+// provider means nothing to another.
+QString usbSourceFactoryName(const GstVideoReceiver::StreamSettings& settings)
+{
+    const QString enumerated = settings.usbSourceElement.trimmed();
+    return enumerated.isEmpty() ? UsbCameraManager::sourceFactoryName() : enumerated;
+}
+
 void configureUsbSourceElement(
     GstElement* source,
     const GstVideoReceiver::StreamSettings& settings)
@@ -127,16 +153,50 @@ void configureUsbSourceElement(
         return;
     }
 
-    if (settings.usbDeviceIndex >= 0 && setElementIntProperty(source, "device-index", settings.usbDeviceIndex)) {
-        // Some capture backends (Media Foundation, AVFoundation) select cameras
-        // by index instead of a device path.
-    } else if (!settings.usbDeviceId.isEmpty()) {
-        if (!setElementStringProperty(source, "device", settings.usbDeviceId)
-            && !setElementStringProperty(source, "device-path", settings.usbDeviceId)) {
-            setElementStringProperty(source, "device-name", settings.usbDeviceName);
-        }
-    } else if (!settings.usbDeviceName.isEmpty()) {
-        setElementStringProperty(source, "device-name", settings.usbDeviceName);
+    // Only selectors that belong to THIS element's own enumeration may be used here.
+    // settings.usbDeviceId/usbDeviceIndex describe the DirectShow enumeration that UVC control
+    // binding needs; the DirectShow and Media Foundation lists differ in both length and order, so
+    // feeding that ordinal to mfvideosrc's device-index silently opens a different camera than the
+    // one picked in the UI (an integrated camera at DirectShow 0 / MF 1 and a hot-plugged UVC unit
+    // at DirectShow 1 / MF 0 simply swap places).
+    bool selected = false;
+    if (!settings.usbSourcePath.isEmpty()) {
+        selected = setElementStringProperty(source, "device-path", settings.usbSourcePath)
+            || setElementStringProperty(source, "device", settings.usbSourcePath);
+    }
+    if (!selected && settings.usbSourceIndex >= 0) {
+        // No native path for this provider (AVFoundation, and any device the monitor reported
+        // without a device.path): the ordinal is still the source enumeration's own.
+        selected = setElementIntProperty(source, "device-index", settings.usbSourceIndex);
+    }
+    if (!selected && !settings.usbDeviceName.isEmpty()) {
+        // Last resort for a device no GStreamer provider enumerated (a DirectShow-only virtual
+        // camera, for instance). Ambiguous between two units of the same model, but it at least
+        // cannot point at an unrelated camera the way a foreign ordinal does.
+        selected = setElementStringProperty(source, "device-name", settings.usbDeviceName.trimmed());
+    }
+    if (selected) {
+        qInfo(
+            "[VideoReceiver] USB source '%s' bound to sourcePath='%s' sourceIndex=%d name='%s' "
+            "(control-binding id='%s' index=%d, deliberately not used as a stream selector).",
+            GST_ELEMENT_NAME(source),
+            qUtf8Printable(settings.usbSourcePath.isEmpty()
+                ? QStringLiteral("<none>")
+                : settings.usbSourcePath),
+            settings.usbSourceIndex,
+            qUtf8Printable(settings.usbDeviceName.trimmed()),
+            qUtf8Printable(settings.usbDeviceId),
+            settings.usbDeviceIndex
+        );
+    } else {
+        qWarning(
+            "[VideoReceiver] USB source '%s' has no usable device selector "
+            "(sourcePath='%s' sourceIndex=%d name='%s'); it will open the provider default.",
+            GST_ELEMENT_NAME(source),
+            qUtf8Printable(settings.usbSourcePath),
+            settings.usbSourceIndex,
+            qUtf8Printable(settings.usbDeviceName)
+        );
     }
 
     if (elementHasProperty(source, "do-timestamp")) {
@@ -736,6 +796,23 @@ bool GstVideoReceiver::createPipeline()
 {
     destroyPipeline();
 
+    if (m_settings.transport == Transport::UsbCamera) {
+        // destroyPipeline() just handed the previous pipeline's teardown to a
+        // detached thread rather than waiting for it (a wedged mfvideosrc can block
+        // there forever). Opening a new mfvideosrc for the same physical device
+        // before that teardown actually releases it makes Media Foundation report
+        // the device as preempted (0xc00d3ea3) instead of just failing to start.
+        // Give it a bounded head start to clear normally; if it never does (a truly
+        // wedged source), proceed anyway rather than reintroducing an unbounded wait.
+        int waitedMs = 0;
+        while (g_pendingUsbTeardowns.load(std::memory_order_relaxed) > 0
+               && waitedMs < kUsbTeardownWaitCapMs
+               && !m_stopRequested.load(std::memory_order_relaxed)) {
+            msleep(kUsbTeardownPollIntervalMs);
+            waitedMs += kUsbTeardownPollIntervalMs;
+        }
+    }
+
     m_seenFrame.store(false, std::memory_order_relaxed);
     m_lastFrameTimestampMs.store(QDateTime::currentMSecsSinceEpoch(), std::memory_order_relaxed);
     m_lastFrameWidth.store(0, std::memory_order_relaxed);
@@ -761,7 +838,7 @@ bool GstVideoReceiver::createPipeline()
 
     m_pipeline = gst_pipeline_new("gcs-player-video-pipeline");
     if (useUsb) {
-        const QByteArray sourceFactory = UsbCameraManager::sourceFactoryName().toUtf8();
+        const QByteArray sourceFactory = usbSourceFactoryName(m_settings).toUtf8();
         m_usbSource = gst_element_factory_make(sourceFactory.constData(), "usb-source");
         m_usbCapsFilter = gst_element_factory_make("capsfilter", "usb-caps-filter");
     } else if (useRtsp) {
@@ -806,7 +883,7 @@ bool GstVideoReceiver::createPipeline()
 
     trackMissingElement(m_pipeline, QStringLiteral("pipeline"));
     if (useUsb) {
-        trackMissingElement(m_usbSource, UsbCameraManager::sourceFactoryName());
+        trackMissingElement(m_usbSource, usbSourceFactoryName(m_settings));
         trackMissingElement(m_usbCapsFilter, QStringLiteral("capsfilter"));
     } else if (useRtsp) {
         trackMissingElement(m_rtspSource, QStringLiteral("rtspsrc"));
@@ -1170,18 +1247,37 @@ void GstVideoReceiver::destroyPipeline()
 {
     finalizeRecording();
 
-    if (m_pipeline != nullptr) {
-        gst_element_set_state(m_pipeline, GST_STATE_NULL);
-    }
+    // Tearing down a pipeline whose source never delivered a real sample (observed
+    // with mfvideosrc right after a USB UVC device is re-enumerated: the source's
+    // internal read thread can be blocked forever waiting on data that will never
+    // arrive) can make gst_element_set_state(..., GST_STATE_NULL) block indefinitely.
+    // That would freeze this thread's run() loop forever and, transitively, any GUI
+    // code that joins it (MainWindow::restartVideoReceiver()'s wait()). Hand the
+    // actual state change and refcount release to a detached thread instead: this
+    // object drops its own references immediately and moves on regardless of whether
+    // the native call ever returns.
+    GstElement* pipeline = m_pipeline;
+    GstBus* bus = m_bus;
+    m_pipeline = nullptr;
+    m_bus = nullptr;
 
-    if (m_bus != nullptr) {
-        gst_object_unref(m_bus);
-        m_bus = nullptr;
-    }
-
-    if (m_pipeline != nullptr) {
-        gst_object_unref(m_pipeline);
-        m_pipeline = nullptr;
+    if (pipeline != nullptr) {
+        const bool isUsb = m_settings.transport == Transport::UsbCamera;
+        if (isUsb) {
+            g_pendingUsbTeardowns.fetch_add(1, std::memory_order_relaxed);
+        }
+        std::thread([pipeline, bus, isUsb]() {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            if (bus != nullptr) {
+                gst_object_unref(bus);
+            }
+            gst_object_unref(pipeline);
+            if (isUsb) {
+                g_pendingUsbTeardowns.fetch_sub(1, std::memory_order_relaxed);
+            }
+        }).detach();
+    } else if (bus != nullptr) {
+        gst_object_unref(bus);
     }
 
     m_udpSource = nullptr;
