@@ -355,7 +355,7 @@ void prependPath(const QString& path)
         return;
     }
 
-    QByteArray currentPath = qgetenv("PATH");
+    const QByteArray currentPath(g_getenv("PATH"));
 #ifdef Q_OS_WIN
     const char separator = ';';
 #else
@@ -363,16 +363,17 @@ void prependPath(const QString& path)
 #endif
     const QByteArray nativePath = QDir::toNativeSeparators(path).toUtf8();
     if (currentPath.isEmpty()) {
-        qputenv("PATH", nativePath);
+        g_setenv("PATH", nativePath.constData(), TRUE);
     } else {
-        qputenv("PATH", nativePath + QByteArray(1, separator) + currentPath);
+        g_setenv("PATH", (nativePath + QByteArray(1, separator) + currentPath).constData(), TRUE);
     }
 }
 
 void setEnvIfPathExists(const char* name, const QString& path)
 {
     if (QFileInfo::exists(path)) {
-        qputenv(name, QDir::toNativeSeparators(path).toUtf8());
+        // GLib accepts UTF-8 on Windows; qputenv uses the ANSI code page.
+        g_setenv(name, QDir::toNativeSeparators(path).toUtf8().constData(), TRUE);
     }
 }
 
@@ -391,7 +392,11 @@ void prepareGStreamerEnvironment()
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString pluginDir = QDir(appDir).filePath(QStringLiteral("gstreamer-1.0"));
     const QString gioModulesDir = QDir(appDir).filePath(QStringLiteral("gio/modules"));
+#ifdef Q_OS_WIN
+    const QString runtimeDir = QDir(appDir).filePath(QStringLiteral("runtime"));
+#else
     const QString runtimeDir = QDir(appDir).filePath(QStringLiteral("gstreamer-runtime"));
+#endif
     const QString toolsDir = QDir(appDir).filePath(QStringLiteral("gstreamer-tools"));
 #ifdef Q_OS_WIN
     const QString scannerFileName = QStringLiteral("gst-plugin-scanner.exe");
@@ -402,15 +407,17 @@ void prepareGStreamerEnvironment()
         QDir(toolsDir).filePath(scannerFileName),
         QDir(QDir(toolsDir).filePath(QStringLiteral("gstreamer-1.0"))).filePath(scannerFileName)
     });
-    const bool hasBundledPluginDir = QFileInfo::exists(pluginDir);
-    const bool hasBundledScanner = QFileInfo::exists(scannerPath);
-    const bool useBundledRuntime = hasBundledPluginDir && hasBundledScanner;
-
+    // Prefer bundled dependencies for helper tools. The Windows launcher has
+    // already configured DLL lookup; plugin scanning runs in this process.
+    if (QFileInfo(toolsDir).isDir()) {
+        prependPath(toolsDir);
+    }
+    if (QFileInfo(runtimeDir).isDir()) {
+        prependPath(runtimeDir);
+    }
     prependPath(appDir);
 
-    if (useBundledRuntime) {
-        prependPath(runtimeDir);
-        prependPath(toolsDir);
+    if (QFileInfo(pluginDir).isDir()) {
         setEnvIfPathExists("GST_PLUGIN_PATH", pluginDir);
         setEnvIfPathExists("GST_PLUGIN_PATH_1_0", pluginDir);
         setEnvIfPathExists("GST_PLUGIN_SYSTEM_PATH", pluginDir);
@@ -452,6 +459,27 @@ bool ensureGStreamerInitialized(QString& errorMessage)
     return initialized;
 }
 } // namespace
+
+bool GstVideoReceiver::validateRuntime(QString& errorMessage)
+{
+    if (!ensureGStreamerInitialized(errorMessage)) {
+        return false;
+    }
+    // Construct elements to force plugin DLL loading as well as registry lookup.
+    // This needs neither a live stream nor a connected camera.
+    for (const char* name : {"appsink", "videoconvert", "udpsrc", "rtspsrc", "tsdemux",
+             "rtph264depay", "rtph265depay", "h264parse", "h265parse",
+             "avdec_h264", "avdec_h265", "x264enc", "mp4mux", "matroskamux"}) {
+        GstElement* element = gst_element_factory_make(name, nullptr);
+        if (element == nullptr) {
+            errorMessage = QStringLiteral("Unable to load GStreamer element: %1")
+                .arg(QString::fromLatin1(name));
+            return false;
+        }
+        gst_object_unref(element);
+    }
+    return true;
+}
 
 GstVideoReceiver::GstVideoReceiver(QObject* parent)
     : GstVideoReceiver(StreamSettings(), parent)

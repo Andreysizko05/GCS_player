@@ -1,0 +1,13 @@
+if(NOT IS_DIRECTORY "${GCS_RUNTIME_SOURCE}" OR NOT GCS_RUNTIME_DESTINATION)
+    message(FATAL_ERROR "GStreamer runtime source and destination are required")
+endif()
+
+file(GLOB _runtime_dlls "${GCS_RUNTIME_SOURCE}/*.dll")
+if(NOT _runtime_dlls)
+    message(FATAL_ERROR "No runtime DLLs found in ${GCS_RUNTIME_SOURCE}")
+endif()
+file(MAKE_DIRECTORY "${GCS_RUNTIME_DESTINATION}")
+foreach(_runtime_dll IN LISTS _runtime_dlls)
+    get_filename_component(_name "${_runtime_dll}" NAME)
+    file(COPY_FILE "${_runtime_dll}" "${GCS_RUNTIME_DESTINATION}/${_name}" ONLY_IF_DIFFERENT)
+endforeach()

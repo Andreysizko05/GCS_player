@@ -75,6 +75,7 @@ public:
     explicit GstVideoReceiver(const StreamSettings& settings, QObject* parent = nullptr);
     ~GstVideoReceiver() override;
 
+    static bool validateRuntime(QString& errorMessage);
     void stop();
     StreamSettings streamSettings() const;
 

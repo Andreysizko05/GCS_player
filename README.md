@@ -66,6 +66,20 @@ ctest --preset windows-debug
 .\build\windows-debug\Debug\GCS_player.exe
 ```
 
+## Windows release bundles
+
+Extract the entire release ZIP and run `bin/GCS_player.exe`. A separate
+GStreamer installation or a GStreamer entry in `PATH` is not required.
+Keep the bundled directories together when moving the application.
+
+Both local builds and `cmake --install` / CPack releases keep Qt and GStreamer
+DLLs in the `runtime` subdirectory, alongside `GCS_player_app.dll`.
+The small native `GCS_player.exe` configures this DLL search directory before
+loading the application. This avoids depending on the system `PATH` or putting
+DLLs beside the executable. GStreamer plugins remain in `bin/gstreamer-1.0`;
+all bundled paths are resolved relative to the executable, independently of
+the working directory.
+
 ## Overrides
 
 - Force fresh managed Qt: `-DGCS_QT_FORCE_DOWNLOAD=ON`

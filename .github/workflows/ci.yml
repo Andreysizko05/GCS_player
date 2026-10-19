@@ -171,6 +171,13 @@ jobs:
       - name: Package
         run: cpack --config build/windows-release/CPackConfig.cmake -G ZIP -C Release
 
+      - name: Test packaged runtime without system GStreamer
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem build/windows-release/*.zip)
+          if ($packages.Count -ne 1) { throw "Expected one release ZIP, found $($packages.Count)" }
+          ./cmake/TestWindowsPackage.ps1 -PackagePath $packages[0].FullName
+
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:

@@ -4,7 +4,7 @@ if(POLICY CMP0207)
     cmake_policy(SET CMP0207 NEW)
 endif()
 
-project(GCS_player VERSION 0.2.2 LANGUAGES CXX)
+project(GCS_player VERSION 1.0.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -90,22 +90,40 @@ set(GCS_PLAYER_SOURCES
 
 qt_standard_project_setup(I18N_TRANSLATED_LANGUAGES uk_UA)
 
-qt_add_executable(GCS_player
-    MANUAL_FINALIZATION
-    ${GCS_PLAYER_SOURCES}
-)
+if(WIN32)
+    # The native launcher configures DLL lookup before loading any Qt/GStreamer
+    # code. Importing those DLLs directly from the EXE would happen before main.
+    add_executable(GCS_player WIN32 "${GCS_CORE_SRC_DIR}/WindowsLauncher.cpp")
+    set_target_properties(GCS_player PROPERTIES
+        AUTOMOC OFF
+        AUTOUIC OFF
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
+    )
+    target_link_libraries(GCS_player PRIVATE shell32 user32)
 
-qt_add_translations(GCS_player
+    set(GCS_APPLICATION_TARGET GCS_player_app)
+    qt_add_library(${GCS_APPLICATION_TARGET} SHARED MANUAL_FINALIZATION ${GCS_PLAYER_SOURCES})
+    set_target_properties(${GCS_APPLICATION_TARGET} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/runtime"
+    )
+    add_dependencies(GCS_player ${GCS_APPLICATION_TARGET})
+else()
+    set(GCS_APPLICATION_TARGET GCS_player)
+    qt_add_executable(GCS_player MANUAL_FINALIZATION ${GCS_PLAYER_SOURCES})
+endif()
+
+qt_add_translations(${GCS_APPLICATION_TARGET}
     TS_FILES "${GCS_CORE_SRC_DIR}/GCS_player_uk_UA.ts"
     RESOURCE_PREFIX /i18n
 )
 
-target_include_directories(GCS_player PRIVATE
+target_include_directories(${GCS_APPLICATION_TARGET} PRIVATE
     "${GCS_CORE_INC_DIR}"
     "${GCS_VIDEO_MODULE_INC_DIR}"
 )
 
-target_link_libraries(GCS_player PRIVATE
+target_link_libraries(${GCS_APPLICATION_TARGET} PRIVATE
     Qt6::Widgets
     Qt6::Multimedia
     Qt6::MultimediaWidgets
@@ -113,7 +131,7 @@ target_link_libraries(GCS_player PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(GCS_player PRIVATE
+    target_link_libraries(${GCS_APPLICATION_TARGET} PRIVATE
         strmiids
         ole32
         oleaut32
@@ -148,17 +166,51 @@ install(TARGETS GCS_player
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+if(WIN32)
+    # Bundle the compiler runtime too, without requiring a redistributable installer.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${CMAKE_INSTALL_BINDIR}/runtime")
+    include(InstallRequiredSystemLibraries)
+    if(MSVC)
+        # Collect Debug CRTs separately so release packages never contain them.
+        # The debug UCRT is part of the Windows SDK, not System32.
+        function(gcs_collect_debug_runtime_libraries output_var)
+            set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS "")
+            set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+            set(CMAKE_INSTALL_DEBUG_LIBRARIES TRUE)
+            set(CMAKE_INSTALL_DEBUG_LIBRARIES_ONLY TRUE)
+            set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
+            include(InstallRequiredSystemLibraries)
+            set(${output_var} "${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}" PARENT_SCOPE)
+        endfunction()
+        gcs_collect_debug_runtime_libraries(GCS_DEBUG_SYSTEM_RUNTIME_LIBS)
+        if(GCS_DEBUG_SYSTEM_RUNTIME_LIBS)
+            install(PROGRAMS ${GCS_DEBUG_SYSTEM_RUNTIME_LIBS}
+                DESTINATION "${CMAKE_INSTALL_BINDIR}/runtime"
+                CONFIGURATIONS Debug
+            )
+        endif()
+    endif()
+    install(TARGETS ${GCS_APPLICATION_TARGET}
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/runtime"
+    )
+    install(FILES "${PROJECT_SOURCE_DIR}/qt.conf" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+
 function(gcs_stage_directory_for_target target source_dir destination_subdir comment_text)
     if(NOT source_dir OR NOT EXISTS "${source_dir}")
         return()
     endif()
 
+    set(_destination_dir "$<TARGET_FILE_DIR:${target}>")
+    if(ARGC GREATER 4)
+        set(_destination_dir "${ARGV4}")
+    endif()
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf
-            "$<TARGET_FILE_DIR:${target}>/${destination_subdir}"
+            "${_destination_dir}/${destination_subdir}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${source_dir}"
-            "$<TARGET_FILE_DIR:${target}>/${destination_subdir}"
+            "${_destination_dir}/${destination_subdir}"
         COMMENT "${comment_text}"
     )
 endfunction()
@@ -183,44 +235,40 @@ if(PkgConfig_FOUND)
     if(WIN32)
         set(GCS_GST_RUNTIME_DIR "${GCS_GST_PREFIX}/bin")
         gcs_stage_directory_for_target(
-            GCS_player
+            ${GCS_APPLICATION_TARGET}
             "${GCS_GST_PLUGIN_DIR}"
             "gstreamer-1.0"
             "Copying GStreamer plugin directory for local execution"
+            "$<TARGET_FILE_DIR:GCS_player>"
         )
         gcs_install_directory_if_exists("${GCS_GST_PLUGIN_DIR}" "gstreamer-1.0")
 
         gcs_stage_directory_for_target(
-            GCS_player
+            ${GCS_APPLICATION_TARGET}
             "${GCS_GST_GIO_MODULE_DIR}"
             "gio/modules"
             "Copying GIO modules for GStreamer"
+            "$<TARGET_FILE_DIR:GCS_player>"
         )
         gcs_install_directory_if_exists("${GCS_GST_GIO_MODULE_DIR}" "gio/modules")
 
         gcs_stage_directory_for_target(
-            GCS_player
+            ${GCS_APPLICATION_TARGET}
             "${GCS_GST_TOOLS_DIR}"
             "gstreamer-tools"
             "Copying GStreamer helper tools"
+            "$<TARGET_FILE_DIR:GCS_player>"
         )
         gcs_install_directory_if_exists("${GCS_GST_TOOLS_DIR}" "gstreamer-tools")
 
         gcs_stage_directory_for_target(
-            GCS_player
+            ${GCS_APPLICATION_TARGET}
             "${GCS_GST_PLUGIN_SCANNER_DIR}"
             "gstreamer-tools/gstreamer-1.0"
             "Copying the GStreamer plugin scanner"
+            "$<TARGET_FILE_DIR:GCS_player>"
         )
         gcs_install_directory_if_exists("${GCS_GST_PLUGIN_SCANNER_DIR}" "gstreamer-tools/gstreamer-1.0")
-
-        gcs_stage_directory_for_target(
-            GCS_player
-            "${GCS_GST_RUNTIME_DIR}"
-            "gstreamer-runtime"
-            "Copying the GStreamer runtime directory"
-        )
-        gcs_install_directory_if_exists("${GCS_GST_RUNTIME_DIR}" "gstreamer-runtime")
     else()
         message(STATUS
             "GStreamer development files were found under ${GCS_GSTREAMER_ROOT}. "
@@ -240,38 +288,52 @@ endif()
 
 if(WIN32)
     get_filename_component(GCS_QT_INSTALL_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+    if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        add_custom_command(TARGET ${GCS_APPLICATION_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+                "$<$<CONFIG:Debug>:${GCS_DEBUG_SYSTEM_RUNTIME_LIBS}>"
+                "$<TARGET_FILE_DIR:GCS_player>/runtime"
+            COMMENT "Deploying the compiler runtime into the private runtime directory"
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+    endif()
     find_program(GCS_WINDEPLOYQT_EXECUTABLE
         NAMES windeployqt
         HINTS "${GCS_QT_INSTALL_PREFIX}/bin"
     )
     if(GCS_WINDEPLOYQT_EXECUTABLE)
-        add_custom_command(TARGET GCS_player POST_BUILD
+        add_custom_command(TARGET ${GCS_APPLICATION_TARGET} POST_BUILD
             COMMAND "${GCS_WINDEPLOYQT_EXECUTABLE}"
                 --force
                 --no-translations
-                "$<TARGET_FILE:GCS_player>"
+                --dir "$<TARGET_FILE_DIR:GCS_player>/runtime"
+                "$<TARGET_FILE:${GCS_APPLICATION_TARGET}>"
             COMMENT "Deploying the Qt runtime for local Windows execution"
         )
-        add_custom_command(TARGET GCS_player POST_BUILD
+        add_custom_command(TARGET ${GCS_APPLICATION_TARGET} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${PROJECT_SOURCE_DIR}/qt.conf"
                 "$<TARGET_FILE_DIR:GCS_player>/qt.conf"
-            COMMAND ${CMAKE_COMMAND} -E rm -rf
-                "$<TARGET_FILE_DIR:GCS_player>/plugins"
             COMMENT "Normalizing Qt plugin lookup for local Windows execution"
         )
-        if(GCS_GST_RUNTIME_DIR AND EXISTS "${GCS_GST_RUNTIME_DIR}")
-            add_custom_command(TARGET GCS_player POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${GCS_GST_RUNTIME_DIR}"
-                    "$<TARGET_FILE_DIR:GCS_player>"
-                COMMENT "Overlaying matching GStreamer runtime DLLs next to the executable"
-            )
-        endif()
     else()
-        message(WARNING
+        message(FATAL_ERROR
             "windeployqt was not found under ${GCS_QT_INSTALL_PREFIX}/bin. "
-            "The built executable may require PATH adjustments on Windows."
+            "It is required to prepare the private Windows runtime directory."
+        )
+    endif()
+
+    # Overlay shared dependencies after Qt deployment to keep them consistent
+    # with the selected GStreamer SDK. All DLLs stay in the private runtime dir.
+    if(GCS_GST_RUNTIME_DIR AND EXISTS "${GCS_GST_RUNTIME_DIR}")
+        add_custom_command(TARGET ${GCS_APPLICATION_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                "-DGCS_RUNTIME_SOURCE=${GCS_GST_RUNTIME_DIR}"
+                "-DGCS_RUNTIME_DESTINATION=$<TARGET_FILE_DIR:GCS_player>/runtime"
+                -P "${PROJECT_SOURCE_DIR}/cmake/CopyRuntimeDlls.cmake"
+            COMMENT "Deploying matching GStreamer DLLs into the private runtime directory"
         )
     endif()
 endif()
@@ -298,13 +360,35 @@ if(NOT WIN32)
     endif()
 endif()
 
-if(WIN32 OR APPLE)
+if(WIN32)
+    qt_generate_deploy_script(
+        TARGET ${GCS_APPLICATION_TARGET}
+        OUTPUT_SCRIPT deploy_script
+        CONTENT "
+qt_deploy_runtime_dependencies(
+    EXECUTABLE \"$<TARGET_FILE:${GCS_APPLICATION_TARGET}>\"
+    BIN_DIR \"${CMAKE_INSTALL_BINDIR}/runtime\"
+    PLUGINS_DIR \"${CMAKE_INSTALL_BINDIR}/runtime\"
+    NO_TRANSLATIONS
+)"
+    )
+    install(SCRIPT ${deploy_script})
+elseif(APPLE)
     qt_generate_deploy_app_script(
         TARGET GCS_player
         OUTPUT_SCRIPT deploy_script
         NO_UNSUPPORTED_PLATFORM_ERROR
     )
     install(SCRIPT ${deploy_script})
+endif()
+
+if(WIN32)
+    # POST_BUILD commands do not populate cmake --install / CPack packages.
+    # Apply the same runtime layout and SDK precedence after Qt deployment.
+    install(DIRECTORY "${GCS_GST_RUNTIME_DIR}/"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/runtime"
+        FILES_MATCHING PATTERN "*.dll"
+    )
 endif()
 
 include(CTest)
@@ -316,11 +400,12 @@ if(BUILD_TESTING)
     )
     set_tests_properties(GCS_player_smoke PROPERTIES
         WORKING_DIRECTORY $<TARGET_FILE_DIR:GCS_player>
+        TIMEOUT 120
     )
 
     if(WIN32)
         set_tests_properties(GCS_player_smoke PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:GCS_player>"
+            ENVIRONMENT "QT_QPA_PLATFORM=windows"
         )
     elseif(UNIX)
         set_tests_properties(GCS_player_smoke PROPERTIES
@@ -329,7 +414,7 @@ if(BUILD_TESTING)
     endif()
 endif()
 
-qt_finalize_executable(GCS_player)
+qt_finalize_target(${GCS_APPLICATION_TARGET})
 
 set(CPACK_PACKAGE_NAME "gcs-player")
 set(CPACK_PACKAGE_VENDOR "KPI")

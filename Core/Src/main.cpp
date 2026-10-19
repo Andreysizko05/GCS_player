@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "GstVideoReceiver.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -40,7 +41,11 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext&, const QString
 
 } // namespace
 
+#ifdef Q_OS_WIN
+extern "C" __declspec(dllexport) int gcsPlayerMain(int argc, char *argv[])
+#else
 int main(int argc, char *argv[])
+#endif
 {
     gLogFile = std::fopen("gcs_player_debug.log", "a");
     if (gLogFile != nullptr) {
@@ -76,6 +81,13 @@ int main(int argc, char *argv[])
     parser.addOption(smokeTestMsOption);
     parser.process(a);
     const bool smokeTest = parser.isSet(smokeTestOption);
+    if (smokeTest) {
+        QString errorMessage;
+        if (!GstVideoReceiver::validateRuntime(errorMessage)) {
+            std::fprintf(stderr, "GStreamer smoke test failed: %s\n", qUtf8Printable(errorMessage));
+            return 1;
+        }
+    }
 
     QTranslator translator;
     const QStringList uiLanguages = QLocale::system().uiLanguages();

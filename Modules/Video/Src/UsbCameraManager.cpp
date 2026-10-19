@@ -40,7 +40,7 @@ void prependPath(const QString& path)
         return;
     }
 
-    QByteArray currentPath = qgetenv("PATH");
+    const QByteArray currentPath(g_getenv("PATH"));
 #ifdef Q_OS_WIN
     const char separator = ';';
 #else
@@ -48,16 +48,17 @@ void prependPath(const QString& path)
 #endif
     const QByteArray nativePath = QDir::toNativeSeparators(path).toUtf8();
     if (currentPath.isEmpty()) {
-        qputenv("PATH", nativePath);
-    } else if (!currentPath.split(separator).contains(nativePath)) {
-        qputenv("PATH", nativePath + QByteArray(1, separator) + currentPath);
+        g_setenv("PATH", nativePath.constData(), TRUE);
+    } else {
+        g_setenv("PATH", (nativePath + QByteArray(1, separator) + currentPath).constData(), TRUE);
     }
 }
 
 void setEnvIfPathExists(const char* name, const QString& path)
 {
     if (QFileInfo::exists(path)) {
-        qputenv(name, QDir::toNativeSeparators(path).toUtf8());
+        // GLib accepts UTF-8 on Windows; qputenv uses the ANSI code page.
+        g_setenv(name, QDir::toNativeSeparators(path).toUtf8().constData(), TRUE);
     }
 }
 
@@ -76,7 +77,11 @@ void prepareGStreamerEnvironment()
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString pluginDir = QDir(appDir).filePath(QStringLiteral("gstreamer-1.0"));
     const QString gioModulesDir = QDir(appDir).filePath(QStringLiteral("gio/modules"));
+#ifdef Q_OS_WIN
+    const QString runtimeDir = QDir(appDir).filePath(QStringLiteral("runtime"));
+#else
     const QString runtimeDir = QDir(appDir).filePath(QStringLiteral("gstreamer-runtime"));
+#endif
     const QString toolsDir = QDir(appDir).filePath(QStringLiteral("gstreamer-tools"));
 #ifdef Q_OS_WIN
     const QString scannerFileName = QStringLiteral("gst-plugin-scanner.exe");
@@ -87,13 +92,17 @@ void prepareGStreamerEnvironment()
         QDir(toolsDir).filePath(scannerFileName),
         QDir(QDir(toolsDir).filePath(QStringLiteral("gstreamer-1.0"))).filePath(scannerFileName)
     });
-    const bool useBundledRuntime = QFileInfo::exists(pluginDir) && QFileInfo::exists(scannerPath);
-
+    // Prefer bundled dependencies for helper tools. The Windows launcher has
+    // already configured DLL lookup; plugin scanning runs in this process.
+    if (QFileInfo(toolsDir).isDir()) {
+        prependPath(toolsDir);
+    }
+    if (QFileInfo(runtimeDir).isDir()) {
+        prependPath(runtimeDir);
+    }
     prependPath(appDir);
 
-    if (useBundledRuntime) {
-        prependPath(runtimeDir);
-        prependPath(toolsDir);
+    if (QFileInfo(pluginDir).isDir()) {
         setEnvIfPathExists("GST_PLUGIN_PATH", pluginDir);
         setEnvIfPathExists("GST_PLUGIN_PATH_1_0", pluginDir);
         setEnvIfPathExists("GST_PLUGIN_SYSTEM_PATH", pluginDir);
